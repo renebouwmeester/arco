@@ -47,10 +47,14 @@ protocol PlayerSource: AnyObject {
 }
 
 enum AppleScript {
+    /// Every script within a time limit: an app that doesn't answer its Apple Events (6 Oct 2026, 21:53: the Music app
+    /// answered nobody, not even Terminal) must not hang Arco — the default limit is two minutes, on the main thread.
     @discardableResult
-    static func run(_ source: String) -> NSAppleEventDescriptor? {
+    static func run(_ source: String, seconds: Int = 3) -> NSAppleEventDescriptor? {
         var error: NSDictionary?
-        let result = NSAppleScript(source: source)?.executeAndReturnError(&error)
+        let script = "with timeout of \(seconds) seconds\n\(source)\nend timeout"
+        let result = NSAppleScript(source: script)?.executeAndReturnError(&error)
+        if let error { Log.note("applescript: \(error[NSAppleScript.errorMessage] ?? error)") }
         return error == nil ? result : nil
     }
 }
