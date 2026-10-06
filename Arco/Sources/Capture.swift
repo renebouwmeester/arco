@@ -17,6 +17,7 @@ final class Capture {
     /// Starts reading the device's input. Returns nil, or what went wrong.
     func start(device: AudioDeviceID) -> String? {
         stop()
+        buffers = 0; soundSeen = false
         let e = AVAudioEngine()
         let input = e.inputNode
         var id = device
@@ -43,10 +44,15 @@ final class Capture {
 
     var isRunning: Bool { engine?.isRunning == true }
 
+    private var buffers = 0
+    private var soundSeen = false
+
     private func deliver(_ buffer: AVAudioPCMBuffer) {
         guard let channels = buffer.floatChannelData, let onAudio else { return }
         let frames = Int(buffer.frameLength)
         guard frames > 0 else { return }
+        buffers += 1
+        if buffers == 1 { Log.note("capture: first buffer, \(frames) frames at \(Int(buffer.format.sampleRate)) Hz") }
         let left = channels[0], right = channels[buffer.format.channelCount > 1 ? 1 : 0]
         var firstSound: Int? = nil
         var pcm = Data(count: frames * 6)
@@ -61,6 +67,8 @@ final class Capture {
             }
             for f in 0..<frames { put(left[f], f); put(right[f], f) }
         }
+        if firstSound != nil, !soundSeen { soundSeen = true; Log.note("capture: first sound after \(buffers) buffers") }
+        if buffers == 200, !soundSeen { Log.note("capture: 200 buffers and only silence — is anything playing to Arco?") }
         onAudio(pcm, frames, firstSound)
     }
 }

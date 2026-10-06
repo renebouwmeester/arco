@@ -58,10 +58,11 @@ final class LiveStream: @unchecked Sendable {
         case .writing:
             break
         case .waitForSilence:
-            if firstSound == nil { gate = .waitForSound; return }
+            if firstSound == nil { gate = .waitForSound; Log.note("stream \(number): silence — waiting for sound at \(written) frames"); return }
         case .waitForSound:
             guard let first = firstSound else { return }
             gate = .writing
+            Log.note("stream \(number): sound — writing from \(written) frames")
             data = pcm.subdata(in: (first * Self.bytesPerFrame)..<pcm.count)
             count = frames - first
         }

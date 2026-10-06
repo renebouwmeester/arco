@@ -15,6 +15,7 @@
 // Milestone 2: the Arco output runs at a fixed 44.1 kHz. A clock per track comes later.
 import AppKit
 import ArcoRoon
+import AVFoundation
 import CoreAudio
 import Foundation
 
@@ -60,7 +61,14 @@ final class Bridge: ObservableObject {
         restoreOutputAfterCrash()
     }
 
-    var isOn: Bool { phase != .off }
+    /// On while it sends or is about to; after a failure the switch is off again (the message stays).
+    var isOn: Bool {
+        switch phase {
+        case .off, .failed: return false
+        default: return true
+        }
+    }
+    private var coverNumber = 0
     static var driverInstalled: Bool { AudioDevices.arco != nil }
 
     // MARK: - On and off
@@ -70,6 +78,16 @@ final class Bridge: ObservableObject {
         zoneName = zone.name
         guard case .paired = connection.state else { return fail("Roon is not connected") }
         guard let arco = AudioDevices.arco else { return fail("Install the Arco audio driver first") }
+        // Reading an audio input needs the microphone permission — also for Arco's own loopback. Without it macOS
+        // delivers silence, without an error.
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized: break
+        case .notDetermined:
+            guard await AVCaptureDevice.requestAccess(for: .audio) else { return fail(Self.microphoneHint) }
+        default:
+            return fail(Self.microphoneHint)
+        }
+        Log.note("on: zone \(zone.name)")
         guard await server.start() != nil else { return fail("Could not open the stream port") }
         zoneID = zone.id
         AudioDevices.setSampleRate(Self.fixedRate, of: arco)
@@ -78,6 +96,7 @@ final class Bridge: ObservableObject {
         }
         AudioDevices.setDefaultOutput(arco)
         if let error = capture.start(device: arco) { return fail(error) }
+        Log.note("capture: reading the Arco input at \(Int(capture.rate)) Hz")
         music.refresh()
         if music.state == .playing { await startSession() } else { phase = .waitingForMusic }
         connection.setStatus("Playing to \(zone.name)")
@@ -98,7 +117,10 @@ final class Bridge: ObservableObject {
         phase = .off
     }
 
+    private static let microphoneHint = "Allow Arco to read its audio output: System Settings › Privacy & Security › Microphone."
+
     private func fail(_ message: String) {
+        Log.note("failed: \(message)")
         turnOff()
         phase = .failed(message)
     }
@@ -115,6 +137,7 @@ final class Bridge: ObservableObject {
         guard await s.begin(displayName: "Arco", iconURL: "http://\(address):\(server.port)/icon.png") else {
             return fail("Roon didn't start a session on this zone")
         }
+        Log.note("session: began on the zone; stream at http://\(address):\(server.port)")
         session = s
         streamNumber += 1
         let live = LiveStream(number: streamNumber, rate: capture.rate, directory: directory)
@@ -124,10 +147,15 @@ final class Bridge: ObservableObject {
         marks = []
         // A little of the music first, so Roon's first read finds something.
         for _ in 0..<50 where live.positionMs < 500 { try? await Task.sleep(for: .milliseconds(100)) }
+        Log.note("stream \(streamNumber): \(live.positionMs) ms of music before the play request")
+        if live.positionMs == 0 {
+            return fail("No sound reaches Arco. Is the Music app playing, to the output Arco?")
+        }
         let info = makeInfo(music.track, address: address)
         ownUntil = Date().addingTimeInterval(3)
         let answer = await s.play(track: String(streamNumber), url: "http://\(address):\(server.port)/stream/\(streamNumber).wav", info: info)
         guard session === s else { return }
+        Log.note("play: Roon answered \(answer)")
         if answer == "Playing" || answer == "Unpaused" { phase = .playing } else { fail("Roon: \(answer)") }
     }
 
@@ -136,7 +164,8 @@ final class Bridge: ObservableObject {
         var imageURL: String?
         let host = address ?? connection.coreHost.flatMap(Discovery.localAddress(toward:))
         if let cover = music.artwork(), let host {
-            let key = "\(track.id).\(cover.type == "image/png" ? "png" : "jpg")"
+            coverNumber += 1
+            let key = "c\(coverNumber).\(cover.type == "image/png" ? "png" : "jpg")"
             server.addCover(cover.data, type: cover.type, key: key)
             imageURL = "http://\(host):\(server.port)/cover/\(key)"
         }
@@ -145,11 +174,13 @@ final class Bridge: ObservableObject {
 
     private func roonEvent(_ event: AudioInputSession.Event) {
         let own = Date() < ownUntil
+        if case .time = event {} else { Log.note("roon: \(event)\(own ? " (ours)" : "")") }
         switch event {
         case .time(_, let ms):
             // Roon reached the start of the next track in the stream: now it shows it.
             while let first = marks.first, ms >= first.ms - 300 {
                 marks.removeFirst()
+                Log.note("roon reached \(first.ms) ms: track information updated")
                 let info = first.info
                 Task { await session?.updateInfo(track: String(streamNumber), info: info) }
             }
@@ -179,6 +210,7 @@ final class Bridge: ObservableObject {
     // MARK: - The Music app
 
     private func musicChanged(_ state: MusicWatcher.State, _ track: MusicWatcher.Track?, _ changed: Bool) {
+        Log.note("music: \(state.rawValue)\(changed ? " — \(track?.title ?? "-")" : "") at stream \(stream?.positionMs ?? -1) ms")
         switch phase {
         case .waitingForMusic:
             if state == .playing { Task { await startSession() } }
