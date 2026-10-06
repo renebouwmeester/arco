@@ -96,11 +96,6 @@ Needs Xcode and [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install
 `release.sh` builds the signed and notarized package, `publish.sh` puts it on GitHub (both need the maintainer's
 certificates and keys). The icons are drawn by `Design/make-icons.swift`.
 
-## A note on quality
-
-Arco is lossless from the Music app into Roon. It does not promise bit-perfect playback of Apple Music's files: the
-Music app itself does not always deliver them bit-exact.
-
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE).
