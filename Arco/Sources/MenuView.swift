@@ -101,7 +101,7 @@ extension MenuView {
         if !Bridge.driverInstalled { return "The Arco audio driver isn't installed yet." }
         let zone = bridge.zoneName ?? model.selectedZone?.name ?? "a zone"
         switch bridge.phase {
-        case .off: return model.selectedZone == nil ? "Pick a zone below first." : "Music and Spotify play on this Mac. Switch on to play them on \(zone)."
+        case .off: return model.selectedZone == nil ? "Pick a zone below first." : "Switch on to play Apple Music or Spotify in Roon on this Mac"
         case .waitingForMusic: return "Ready — press play in Music or Spotify to start on \(zone)."
         case .starting: return "Starting on \(zone)…"
         case .playing: return "Playing on \(zone)."
