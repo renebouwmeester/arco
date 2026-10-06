@@ -169,7 +169,7 @@ final class Bridge: ObservableObject {
         }
         let info = makeInfo(music.track, address: address)
         ownUntil = Date().addingTimeInterval(3)
-        let answer = await s.play(track: String(streamNumber), url: "http://\(address):\(server.port)/stream/\(streamNumber).wav", info: info)
+        let answer = await s.play(track: String(streamNumber), url: "http://\(address):\(server.port)\(live.path)", info: info)
         guard session === s else { return }
         Log.note("play: Roon answered \(answer)")
         if answer == "Playing" || answer == "Unpaused" {

@@ -13,10 +13,16 @@ final class StreamServer: @unchecked Sendable {
     private var icon: Data?
     private(set) var port: UInt16 = 0
 
+    /// The port Arco prefers. A fixed one, not whatever the system gives: when Roon keeps fetching a stream that no
+    /// longer exists, it must get a 404 from Arco — a closed port makes its downloader retry forever, and that downloader
+    /// holds the zone's bandwidth (6 Oct 2026: a stream of 20:18 blocked the next one until 20:26).
+    static let preferredPort: UInt16 = 9277
+
     /// Starts listening; returns once the port is known (or nil after two seconds).
     func start() async -> UInt16? {
         if port != 0 { return port }
-        guard let l = try? NWListener(using: .tcp, on: .any) else { return nil }
+        let fixed = NWEndpoint.Port(rawValue: Self.preferredPort).flatMap { try? NWListener(using: .tcp, on: $0) }
+        guard let l = fixed ?? (try? NWListener(using: .tcp, on: .any)) else { return nil }
         l.newConnectionHandler = { [weak self] connection in self?.accept(connection) }
         l.start(queue: .global(qos: .userInitiated))
         listener = l
@@ -67,9 +73,9 @@ final class StreamServer: @unchecked Sendable {
 
     private func route(_ connection: NWConnection, method: String, path: String, range: String?) {
         let headOnly = method == "HEAD"
-        if path.hasPrefix("/stream/"), let n = Int(path.dropFirst("/stream/".count).replacingOccurrences(of: ".wav", with: "")) {
+        if path.hasPrefix("/stream/") {
             lock.lock(); let s = stream; lock.unlock()
-            if let s, s.number == n { s.serve(connection, range: range, headOnly: headOnly); return }
+            if let s, path == s.path { s.serve(connection, range: range, headOnly: headOnly); return }
             return respond(connection, status: "404 Not Found", type: "text/plain", body: Data())
         }
         if path.hasPrefix("/cover/") {

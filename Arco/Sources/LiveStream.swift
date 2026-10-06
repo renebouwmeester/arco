@@ -21,6 +21,10 @@ final class LiveStream: @unchecked Sendable {
     enum Gate { case writing, waitForSilence, waitForSound }
 
     let number: Int
+    /// Unique per run and per stream (/stream/<run>-<n>.wav): Roon caches by URL, and a cached failure for an address
+    /// that came back must not be handed to a new stream.
+    let path: String
+    private static let run = String(UInt32.random(in: 0...UInt32.max), radix: 36)
     let rate: Double
     let declaredFrames: Int
     private let file: URL
@@ -34,6 +38,7 @@ final class LiveStream: @unchecked Sendable {
 
     init(number: Int, rate: Double, directory: URL, hours: Double = 3) {
         self.number = number; self.rate = rate
+        path = "/stream/\(Self.run)-\(number).wav"
         declaredFrames = Int(rate * 3600 * hours)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         file = directory.appendingPathComponent("stream-\(number).pcm")
