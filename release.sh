@@ -19,6 +19,10 @@ if xattr -p com.apple.provenance "$probe" > /dev/null 2>&1; then
 fi
 rm -f "$probe"
 
+# A release is built with the released Xcode, not whatever xcode-select points to (often a beta).
+export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
+[ -d "$DEVELOPER_DIR" ] || { echo "no Xcode at $DEVELOPER_DIR"; exit 1; }
+
 TEAM=XX742N7ZNY
 OUT=build/release
 ROOT="$OUT/root"
