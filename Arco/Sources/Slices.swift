@@ -61,7 +61,9 @@ final class SliceStore: @unchecked Sendable {
     enum Gate { case writing, waitForSilence, waitForSound }
 
     static let bytesPerFrame = 6
-    private static let run = String(UInt32.random(in: 0...UInt32.max), radix: 36)
+    /// Unique per session: Roon caches by URL, and slice 1 of a new session must never be served from slice 1 of the last
+    /// one (20:56:53: Roon showed "24/48, 1:14" — the old slice — for a new slice at 44.1 of 528 s).
+    private let session = String(UInt64.random(in: 0...UInt64.max), radix: 36)
     private let directory: URL
     private let lock = NSLock()
     private var slices: [Int: Slice] = [:]
@@ -195,7 +197,7 @@ final class SliceStore: @unchecked Sendable {
         guard let a = pending else { return }
         pending = nil
         counter += 1
-        let s = Slice(number: counter, path: "/stream/\(Self.run)-\(counter).wav", rate: rate,
+        let s = Slice(number: counter, path: "/stream/\(session)-\(counter).wav", rate: rate,
                       frames: Int(Double(a.durationMs) / 1000 * rate), info: a.info, immediate: a.immediate, directory: directory)
         slices[s.number] = s
         current = s
