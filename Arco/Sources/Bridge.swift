@@ -35,6 +35,10 @@ final class Bridge: ObservableObject {
 
     @Published private(set) var phase: Phase = .off
     @Published private(set) var zoneName: String?
+    /// What Roon plays from Arco now — set when Roon starts a run or reaches the next track in it. The menu shows this for
+    /// Arco's zone: Roon's own "now playing" of an audio-input session lags behind (Apple's title stayed long after
+    /// Spotify had taken over).
+    @Published private(set) var nowPlaying: (title: String, artist: String)?
 
     private let connection: RoonConnection
     private let server = StreamServer()
@@ -175,6 +179,7 @@ final class Bridge: ObservableObject {
         store = nil
         zoneID = nil
         restoreOutput()
+        nowPlaying = nil
         if phase != .off { connection.setStatus("Ready") }
         phase = .off
     }
@@ -248,6 +253,7 @@ final class Bridge: ObservableObject {
             guard self.session === s else { return }
             if answer == "Playing" || answer == "Unpaused" {
                 self.roonSlice = slice.number
+                self.nowPlaying = Self.lines(slice.info)
                 self.roonPositionMs = 0; self.roonTimeAt = Date()
                 self.marks.removeAll { $0.number < slice.number }
                 if self.phase == .starting { self.phase = .playing; self.startHeartbeat() }
@@ -309,6 +315,7 @@ final class Bridge: ObservableObject {
             // Roon reached the start of the next track in its run: now it shows it.
             while let i = marks.firstIndex(where: { $0.number == n && $0.ms <= ms + 300 }) {
                 let mark = marks.remove(at: i)
+                nowPlaying = Self.lines(mark.info)
                 Log.note("roon reached \(mark.ms) ms of run \(n): track information updated")
                 Task { await session?.updateInfo(track: track, info: mark.info) }
             }
@@ -455,6 +462,12 @@ final class Bridge: ObservableObject {
         default:
             break
         }
+    }
+
+    /// Title and artist from Roon's track information.
+    private static func lines(_ info: JSON) -> (title: String, artist: String)? {
+        guard let two = info["two_line"] as? JSON, let title = two["line1"] as? String else { return nil }
+        return (title, two["line2"] as? String ?? "")
     }
 
     private func roonControl(_ control: String) {

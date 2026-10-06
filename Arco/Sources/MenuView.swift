@@ -65,7 +65,9 @@ struct MenuView: View {
                 Text("Play to").font(.caption).foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(model.zones) { zone in
-                        ZoneRow(zone: zone, selected: zone.id == model.selectedZoneID) { model.select(zone) }
+                        // Arco's zone shows what Arco sends (Roon's own line for an audio-input session lags behind).
+                        let own = zone.id == model.selectedZoneID && bridge.isOn ? bridge.nowPlaying : nil
+                        ZoneRow(zone: zone, selected: zone.id == model.selectedZoneID, arcoPlays: own) { model.select(zone) }
                         if zone.id == model.selectedZoneID, zone.volume != nil {
                             VolumeRow(zone: zone, model: model)
                                 .padding(.leading, 26).padding(.bottom, 4)
@@ -112,6 +114,7 @@ extension MenuView {
 private struct ZoneRow: View {
     let zone: RoonZone
     let selected: Bool
+    var arcoPlays: (title: String, artist: String)? = nil
     let action: () -> Void
     @State private var hovering = false
 
@@ -139,7 +142,8 @@ private struct ZoneRow: View {
 
     /// What plays there, so a busy zone is recognisable before you take it over.
     private var playingLine: String? {
-        let what = [zone.nowPlayingTitle, zone.nowPlayingSubtitle].compactMap { $0 }.joined(separator: " · ")
+        let what = arcoPlays.map { [$0.title, $0.artist].filter { !$0.isEmpty }.joined(separator: " · ") }
+            ?? [zone.nowPlayingTitle, zone.nowPlayingSubtitle].compactMap { $0 }.joined(separator: " · ")
         switch zone.state {
         case "playing": return what.isEmpty ? "Playing" : "▶︎ " + what
         case "paused": return what.isEmpty ? "Paused" : "Paused · " + what
