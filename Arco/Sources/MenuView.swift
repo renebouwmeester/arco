@@ -98,14 +98,14 @@ extension MenuView {
     private var isFailure: Bool { if case .failed = bridge.phase { return true }; return false }
 
     private var sendingLine: String {
-        if !Bridge.driverInstalled { return "The Arco audio driver isn't installed yet." }
+        if !Bridge.driverInstalled { return "The Arco audio driver isn't installed yet" }
         let zone = bridge.zoneName ?? model.selectedZone?.name ?? "a zone"
         switch bridge.phase {
-        case .off: return model.selectedZone == nil ? "Pick a zone below first." : "Switch on to play Apple Music or Spotify in Roon on this Mac"
-        case .waitingForMusic: return "Ready — press play in Music or Spotify to start on \(zone)."
+        case .off: return model.selectedZone == nil ? "Pick a zone below first" : "Switch on to play Apple Music or Spotify in Roon on this Mac"
+        case .waitingForMusic: return "Ready — press play in Music or Spotify to start on \(zone)"
         case .starting: return "Starting on \(zone)…"
-        case .playing: return "Playing on \(zone)."
-        case .paused: return "Paused on \(zone)."
+        case .playing: return "Playing on \(zone)"
+        case .paused: return "Paused on \(zone)"
         case .failed(let message): return message
         }
     }
