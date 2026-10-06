@@ -43,6 +43,19 @@ xcodebuild -project Arco.xcodeproj -scheme Arco -configuration Release -derivedD
 APP="build/rel/Build/Products/Release/Arco.app"
 [ -d "$APP" ] && [ -f "$APP/Contents/MacOS/Arco" ] || { echo "no $APP"; exit 1; }
 ditto --norsrc --noextattr "$APP" "$ROOT/Applications/Arco.app"
+# Sparkle's helpers (installer, downloader, Autoupdate, Updater.app) come signed by their own project: notarization wants
+# every executable under our Developer ID with the hardened runtime — inside out, then the app again.
+FW="$ROOT/Applications/Arco.app/Contents/Frameworks/Sparkle.framework"
+if [ -d "$FW" ]; then
+  sign() { codesign --force --options runtime --timestamp --sign "$APP_ID" "$@"; }
+  sign "$FW/Versions/B/XPCServices/Installer.xpc"
+  sign --preserve-metadata=entitlements "$FW/Versions/B/XPCServices/Downloader.xpc"
+  sign "$FW/Versions/B/Autoupdate"
+  sign "$FW/Versions/B/Updater.app"
+  sign "$FW"
+  sign --entitlements Arco/Arco.entitlements "$ROOT/Applications/Arco.app"
+  codesign --verify --strict --deep "$ROOT/Applications/Arco.app" || { echo "the app's signature doesn't hold"; exit 1; }
+fi
 # Xcode adds the debugging entitlement get-task-allow by itself; notarization refuses it.
 if codesign -d --entitlements - "$ROOT/Applications/Arco.app" 2> /dev/null | grep -q get-task-allow; then
   echo "the app still has com.apple.security.get-task-allow — notarization would refuse it"; exit 1
@@ -85,5 +98,39 @@ if [ "$APP_ID" != "Apple Development" ] && [ -n "$PKG_ID" ] && xcrun notarytool 
   xcrun stapler staple "$PKG"
 else
   echo "!! not notarized (needs both Developer ID certificates and the notary profile arco-notary)"
+fi
+
+# The appcast for Sparkle: one item, this package, signed with the EdDSA key in this Mac's keychain (made once with
+# Sparkle's generate_keys). It goes up with the package as an asset of the GitHub Release (./publish.sh).
+KEY=$(/usr/libexec/PlistBuddy -c "Print SUPublicEDKey" Arco/Info.plist 2> /dev/null || true)
+SIGN_UPDATE=build/rel/SourcePackages/artifacts/sparkle/Sparkle/bin/sign_update
+if [ -n "$KEY" ] && [ -x "$SIGN_UPDATE" ]; then
+  BUILD=$(/usr/libexec/PlistBuddy -c "Print CFBundleVersion" Arco/Info.plist)
+  SIGNATURE=$("$SIGN_UPDATE" "$PKG")   # sparkle:edSignature="…" length="…"
+  NOTES=""
+  [ -f "Package/notes/$VERSION.html" ] && NOTES="<description><![CDATA[$(cat "Package/notes/$VERSION.html")]]></description>"
+  REPO=https://github.com/renebouwmeester/arco
+  cat > "$OUT/appcast.xml" <<XML
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Arco</title>
+    <item>
+      <title>Arco $VERSION</title>
+      <pubDate>$(LC_ALL=C date -u "+%a, %d %b %Y %H:%M:%S +0000")</pubDate>
+      <sparkle:version>$BUILD</sparkle:version>
+      <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <link>$REPO/releases/tag/v$VERSION</link>
+      $NOTES
+      <enclosure url="$REPO/releases/download/v$VERSION/Arco-$VERSION.pkg" sparkle:installationType="package"
+                 type="application/octet-stream" $SIGNATURE/>
+    </item>
+  </channel>
+</rss>
+XML
+  echo "$OUT/appcast.xml"
+else
+  echo "!! no appcast (needs SUPublicEDKey in project.yml and Sparkle's sign_update)"
 fi
 echo "$PKG"

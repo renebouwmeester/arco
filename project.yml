@@ -8,6 +8,9 @@ options:
 packages:
   ArcoRoon:
     path: Packages/ArcoRoon
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    majorVersion: "2.6.0"
 
 targets:
   Arco:
@@ -18,18 +21,23 @@ targets:
       - path: Arco/Assets.xcassets   # the app icon and the menu bar glyph (drawn by Design/make-icons.swift)
     dependencies:
       - package: ArcoRoon
+      - package: Sparkle
     info:
       path: Arco/Info.plist
       properties:
         CFBundleDisplayName: Arco
-        CFBundleShortVersionString: "0.1.0"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: "0.1.1"
+        CFBundleVersion: "2"
         LSMinimumSystemVersion: "14.0"
         # A menu bar app: no Dock icon, no main window.
         LSUIElement: true
         NSLocalNetworkUsageDescription: Arco finds your Roon Core on the local network and streams your music to it.
         NSAppleEventsUsageDescription: Arco reads what the Music app and Spotify play (title, artist, album, cover) and passes Roon's play, pause and skip buttons on to them.
         NSMicrophoneUsageDescription: Arco reads the Arco audio output's loopback — the music the Music app plays to it. It never listens to a microphone.
+        # Sparkle: the appcast of the latest GitHub Release, and the public half of René's EdDSA key (the private half
+        # stays in his keychain; release.sh signs each package with it).
+        SUFeedURL: https://github.com/renebouwmeester/arco/releases/latest/download/appcast.xml
+        SUPublicEDKey: ""
         NSHumanReadableCopyright: "© 2026 René Bouwmeester · Apache License 2.0"
     entitlements:
       path: Arco/Arco.entitlements

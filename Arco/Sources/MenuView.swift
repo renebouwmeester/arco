@@ -33,7 +33,14 @@ struct MenuView: View {
                 content
             }
             Divider()
-            LoginItemToggle()
+            HStack {
+                LoginItemToggle()
+                Spacer()
+                if model.updater.available {
+                    Button("Check for Updates…") { model.updater.checkForUpdates() }
+                        .buttonStyle(.borderless)
+                }
+            }
             HStack {
                 Button("Uninstall Arco…") { Uninstaller.run(bridge: bridge) }
                     .buttonStyle(.borderless)
