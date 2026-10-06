@@ -332,8 +332,7 @@ final class Bridge: ObservableObject {
     // MARK: - The Music app
 
     private func musicChanged(_ state: MusicWatcher.State, _ track: MusicWatcher.Track?, _ changed: Bool) {
-        Log.note("music: \(state.rawValue)\(changed ? " — \(track?.title ?? "-")" : "")\(holdingResume ? " (held)" : "")")
-        if holdingResume, !changed { return }
+        Log.note("music: \(state.rawValue)\(changed ? " — \(track?.title ?? "-")" : "")")
         switch phase {
         case .waitingForMusic:
             if state == .playing { Task { await startSession() } }
@@ -354,40 +353,28 @@ final class Bridge: ObservableObject {
                 }
             }
             if state != .playing, phase == .playing {
-                // The run closes at once — whatever silence Music leaves is not written.
+                // The run closes at once — whatever silence Music leaves is not written. Roon pauses 0.6 s later, unless
+                // Music plays again by then or the rate changes around it: then it was Music changing the clock (~1.2 s;
+                // the rate change comes just before its pause, or just after — 21:34:58), which must not reach Roon.
                 store?.pauseWriting()
-                pendingPause?.cancel(); pendingPause = nil
-                if Date().timeIntervalSince(rateChangedAt) < 1.5 {
-                    // Music changing the clock (the rate changes just before its pause, ~1.2 s): not a pause. Roon plays on
-                    // from its supply; the seam comes with the new run.
-                    Log.note("pause: Music changes the clock — Roon plays on")
-                } else {
-                    // A real pause: Roon pauses at once, its supply intact. (Timing Roon's pause to the point where Music
-                    // paused used that supply up — Roon then played on at the very edge of the stream, starved and silent,
-                    // 21:22:45.)
-                    roonControl("pause")
-                    phase = .paused
-                }
-            } else if state == .playing, phase == .paused, !holdingResume {
-                // Resumed in Music. Roon needs about a second to start again (it re-opens RAAT after a pause); if Music
-                // played on meanwhile, the stream would grow and Roon would fall a second further behind at every pause.
-                // So Music waits: held, Roon started, then Music goes on — Roon's distance stays the same, nothing is lost.
-                holdingResume = true
-                store?.pauseWriting()
-                music.pause()
                 pendingPause?.cancel()
                 pendingPause = Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    await self.waitForSupply()
-                    self.roonControl("play")
-                    let until = Date().addingTimeInterval(2.5)
-                    while Date() < until, self.phase == .paused { try? await Task.sleep(for: .milliseconds(50)) }
-                    self.phase = .playing
-                    self.ownUntil = Date().addingTimeInterval(3)
-                    self.music.play()
-                    try? await Task.sleep(for: .milliseconds(500))
-                    self.holdingResume = false
-                    Log.note("resume: Roon started first, then Music")
+                    try? await Task.sleep(for: .milliseconds(600))
+                    guard let self, !Task.isCancelled, self.music.state != .playing, self.phase == .playing else { return }
+                    if Date().timeIntervalSince(self.rateChangedAt) < 2 {
+                        Log.note("pause: Music changes the clock — Roon plays on")
+                        return
+                    }
+                    self.roonControl("pause")
+                    self.phase = .paused
+                }
+            } else if state == .playing {
+                pendingPause?.cancel(); pendingPause = nil
+                if phase == .paused {
+                    // Roon goes on at once (after a short pause it doesn't even re-open RAAT). Holding Music back until Roon
+                    // played (c579c99) got in the way — during a change of clock above all.
+                    roonControl("play")
+                    phase = .playing
                 }
             }
         default:
@@ -399,8 +386,6 @@ final class Bridge: ObservableObject {
     /// keeps it fed; at the edge of the stream it starves (it counts on, without sound).
     private static let supplyMs = 5000
     private var rateChangedAt = Date.distantPast
-    /// Music held for a moment at a resume, while Roon starts again: its notifications meanwhile are Arco's own.
-    private var holdingResume = false
 
     /// Waits (at most eight seconds) until the stream is `supplyMs` ahead of where Roon is in the current run.
     private func waitForSupply() async {
