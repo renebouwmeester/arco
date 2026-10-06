@@ -53,6 +53,7 @@ final class Bridge: ObservableObject {
     /// Until when Roon's pause / play events are our own doing.
     private var ownUntil = Date.distantPast
     private var coverNumber = 0
+    private static let coverRun = String(UInt64.random(in: 0...UInt64.max), radix: 36)
     private var pendingPause: Task<Void, Never>?
     private var termSource: DispatchSourceSignal?
     private var roonPositionMs = 0
@@ -239,8 +240,9 @@ final class Bridge: ObservableObject {
     private func makeInfo(_ track: MusicWatcher.Track) -> JSON {
         var imageURL: String?
         if let cover = music.artwork(), let address {
+            // Unique per run, like the slices: Roon caches images by URL, and "c1" of the last run showed the wrong cover.
             coverNumber += 1
-            let key = "c\(coverNumber).\(cover.type == "image/png" ? "png" : "jpg")"
+            let key = "\(Self.coverRun)-\(coverNumber).\(cover.type == "image/png" ? "png" : "jpg")"
             server.addCover(cover.data, type: cover.type, key: key)
             imageURL = "http://\(address):\(server.port)/cover/\(key)"
         }
