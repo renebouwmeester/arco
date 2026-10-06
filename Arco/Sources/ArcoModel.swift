@@ -10,6 +10,7 @@ final class ArcoModel: ObservableObject {
 
     let connection: RoonConnection
     let bridge: Bridge
+    let setup = SetupCheck()
     private let tracker = ZoneTracker()
 
     /// The chosen zone is remembered by id and by name: Roon gives a zone a new id when it is grouped or ungrouped,

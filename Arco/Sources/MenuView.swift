@@ -6,11 +6,15 @@ import ArcoRoon
 struct MenuView: View {
     @ObservedObject var model: ArcoModel
     @ObservedObject var bridge: Bridge
+    @ObservedObject var setup: SetupCheck
 
     init(model: ArcoModel) {
         self.model = model
         self.bridge = model.bridge
+        self.setup = model.setup
     }
+
+    private var isPaired: Bool { if case .paired = model.connectionState { return true }; return false }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -20,9 +24,19 @@ struct MenuView: View {
                 Text(statusLine).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Divider()
-            content
+            // The checklist while something is missing — also while Roon isn't connected (its last item).
+            if !(setup.macReady && isPaired) {
+                SetupList(setup: setup, connection: model.connectionState)
+            }
+            if isPaired {
+                if !setup.macReady { Divider() }
+                content
+            }
             Divider()
             HStack {
+                Button("Uninstall Arco…") { Uninstaller.run(bridge: bridge) }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
                 Spacer()
                 Button("Quit Arco") { NSApplication.shared.terminate(nil) }
                     .buttonStyle(.borderless)
@@ -31,6 +45,7 @@ struct MenuView: View {
         }
         .padding(12)
         .frame(width: 320)
+        .onAppear { setup.refresh() }
     }
 
     private var statusLine: String {
@@ -42,20 +57,11 @@ struct MenuView: View {
         }
     }
 
+    /// The switch and the zones, once Roon is connected (before that the checklist says what is missing).
     @ViewBuilder private var content: some View {
         switch model.connectionState {
-        case .searching, .connecting:
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text("Looking for a Roon Core on your network").font(.callout).foregroundStyle(.secondary)
-            }
-        case .waitingForAuthorization:
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Allow Arco in Roon").font(.callout.weight(.semibold))
-                Text("In Roon on any device, open Settings › Extensions and press Enable next to Arco")
-                    .font(.callout).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+        case .searching, .connecting, .waitingForAuthorization:
+            EmptyView()
         case .paired:
             sending
             Divider()
