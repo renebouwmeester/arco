@@ -9,7 +9,7 @@ struct ArcoApp: App {
         MenuBarExtra {
             MenuView(model: model)
         } label: {
-            Image(systemName: "wave.3.right")
+            Image("MenuIcon")   // a template: macOS tints it for a light or dark menu bar
         }
         .menuBarExtraStyle(.window)
     }

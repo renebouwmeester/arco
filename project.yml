@@ -15,6 +15,7 @@ targets:
     platform: macOS
     sources:
       - path: Arco/Sources
+      - path: Arco/Assets.xcassets   # the app icon and the menu bar glyph (drawn by Design/make-icons.swift)
     dependencies:
       - package: ArcoRoon
     info:
@@ -40,6 +41,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: nl.renebouwmeester.arco
         PRODUCT_NAME: Arco
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         DEVELOPMENT_TEAM: XX742N7ZNY
         CODE_SIGN_STYLE: Automatic
         ENABLE_HARDENED_RUNTIME: YES
