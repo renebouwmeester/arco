@@ -211,6 +211,8 @@ final class Bridge: ObservableObject {
                     try? await Task.sleep(for: .milliseconds(50))
                 }
                 Log.note("run \(slice.number): Roon at \(self.roonPositionNow()) ms of run \(follows.number) (frozen at \(follows.atMs))")
+                // And the new run's own supply: the seam in Roon is then as long as Music's own pause to change the clock.
+                await self.waitForSupply()
             } else {
                 // A little of the music first, so Roon's first read finds something.
                 for _ in 0..<30 where (self.store?.status?.writtenMs ?? 0) < 500 { try? await Task.sleep(for: .milliseconds(100)) }
@@ -324,6 +326,7 @@ final class Bridge: ObservableObject {
         guard rate != capture.rate else { return }
         Log.note("device: Arco changed to \(Int(rate)) Hz (was \(Int(capture.rate)))")
         capture.rate = rate
+        rateChangedAt = Date()
     }
 
     // MARK: - The Music app
@@ -347,31 +350,47 @@ final class Bridge: ObservableObject {
                 }
             }
             if state != .playing, phase == .playing {
-                // The run closes at once — whatever silence Music leaves is not written. Roon pauses only when it reaches
-                // the point where Music paused: a short pause of Music (to change the clock, ~1.2 s; or a hiccup) never
-                // reaches Roon at all, and a real pause falls exactly at its place in the music — not six seconds early.
+                // The run closes at once — whatever silence Music leaves is not written.
                 store?.pauseWriting()
-                let at = store?.status
+                pendingPause?.cancel(); pendingPause = nil
+                if Date().timeIntervalSince(rateChangedAt) < 1.5 {
+                    // Music changing the clock (the rate changes just before its pause, ~1.2 s): not a pause. Roon plays on
+                    // from its supply; the seam comes with the new run.
+                    Log.note("pause: Music changes the clock — Roon plays on")
+                } else {
+                    // A real pause: Roon pauses at once, its supply intact. (Timing Roon's pause to the point where Music
+                    // paused used that supply up — Roon then played on at the very edge of the stream, starved and silent,
+                    // 21:22:45.)
+                    roonControl("pause")
+                    phase = .paused
+                }
+            } else if state == .playing, phase == .paused {
+                // Roon goes on when its supply is back (normally at once).
                 pendingPause?.cancel()
                 pendingPause = Task { @MainActor [weak self] in
-                    while let self, !Task.isCancelled, self.music.state != .playing, self.phase == .playing,
-                          let at, self.roonSlice == at.number, self.roonPositionNow() < at.writtenMs - 150 {
-                        try? await Task.sleep(for: .milliseconds(50))
-                    }
-                    guard let self, !Task.isCancelled, self.music.state != .playing, self.phase == .playing else { return }
-                    Log.note("pause: Roon reached the point where Music paused")
-                    self.roonControl("pause")
-                    self.phase = .paused
-                }
-            } else if state == .playing {
-                pendingPause?.cancel(); pendingPause = nil
-                if phase == .paused {
-                    roonControl("play")
-                    phase = .playing
+                    await self?.waitForSupply()
+                    guard let self, !Task.isCancelled, self.music.state == .playing, self.phase == .paused else { return }
+                    self.roonControl("play")
+                    self.phase = .playing
                 }
             }
         default:
             break
+        }
+    }
+
+    /// Roon's supply: how far the stream is ahead of Roon. Roon plays a few seconds behind, and those seconds are what
+    /// keeps it fed; at the edge of the stream it starves (it counts on, without sound).
+    private static let supplyMs = 5000
+    private var rateChangedAt = Date.distantPast
+
+    /// Waits (at most eight seconds) until the stream is `supplyMs` ahead of where Roon is in the current run.
+    private func waitForSupply() async {
+        let until = Date().addingTimeInterval(8)
+        while Date() < until, let status = store?.status {
+            let roonAt = roonSlice == status.number ? roonPositionMs : 0
+            if status.writtenMs - roonAt >= Self.supplyMs - 300 { return }
+            try? await Task.sleep(for: .milliseconds(50))
         }
     }
 
