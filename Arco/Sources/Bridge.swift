@@ -26,6 +26,9 @@ import Foundation
 final class Bridge: ObservableObject {
     enum Phase: Equatable {
         case off
+        /// Between the click and "ready": pausing the source, switching the output, starting the capture (1–2 s). The
+        /// switch shows on at once — before, it stayed off that long and invited a second click (22:52, three tries).
+        case switchingOn
         case waitingForMusic
         case starting
         case playing
@@ -34,6 +37,7 @@ final class Bridge: ObservableObject {
     }
 
     @Published private(set) var phase: Phase = .off
+    private var attempt = 0
     @Published private(set) var zoneName: String?
     /// What Roon plays from Arco now — set when Roon starts a run or reaches the next track in it. The menu shows this for
     /// Arco's zone: Roon's own "now playing" of an audio-input session lags behind (Apple's title stayed long after
@@ -111,6 +115,11 @@ final class Bridge: ObservableObject {
 
     func turnOn(zone: RoonZone) async {
         turnOff()
+        attempt += 1
+        let mine = attempt
+        /// Still this attempt after an await: no turnOff (a second click) or a newer turnOn came in between.
+        func current() -> Bool { attempt == mine && phase == .switchingOn }
+        phase = .switchingOn
         zoneName = zone.name
         guard case .paired = connection.state else { return fail("Roon is not connected") }
         guard let arco = AudioDevices.arco else { return fail("Install the Arco audio driver first") }
@@ -120,11 +129,13 @@ final class Bridge: ObservableObject {
         case .authorized: break
         case .notDetermined:
             guard await AVCaptureDevice.requestAccess(for: .audio) else { return fail(Self.microphoneHint) }
+            guard current() else { return }
         default:
             return fail(Self.microphoneHint)
         }
         Log.note("on: zone \(zone.name)")
         guard await server.start() != nil else { return fail("Could not open the stream port") }
+        guard current() else { return }
         guard let host = connection.coreHost, let address = Discovery.localAddress(toward: host) else {
             return fail("Can't reach the Roon Core from this Mac")
         }
@@ -137,7 +148,11 @@ final class Bridge: ObservableObject {
         // Basso's lesson for a change of output or clock: pause, change, resume. Switching the output under a playing
         // Music app makes it stumble (20:27:58: paused and on again 42 ms later — a hiccup in the music itself).
         let wasPlaying = source.state == .playing
-        if wasPlaying { source.pause(); try? await Task.sleep(for: .milliseconds(300)) }
+        if wasPlaying {
+            source.pause()
+            try? await Task.sleep(for: .milliseconds(300))
+            guard current() else { return }
+        }
         if let current = AudioDevices.defaultOutput, current != arco, let uid = AudioDevices.uid(of: current) {
             UserDefaults.standard.set(uid, forKey: Self.previousOutputKey)
         }
@@ -163,6 +178,7 @@ final class Bridge: ObservableObject {
     }
 
     func turnOff() {
+        attempt += 1   // an attempt to turn on that is still under way stops at its next step
         if let rateWatch, let arcoDevice { AudioDevices.stopWatchingSampleRate(of: arcoDevice, rateWatch) }
         rateWatch = nil
         heartbeat?.invalidate(); heartbeat = nil
@@ -363,6 +379,7 @@ final class Bridge: ObservableObject {
 
     private func sourceChanged(_ s: PlayerSource, _ state: SourceState, _ track: SourceTrack?, _ changed: Bool) {
         Log.note("\(s.name.lowercased()): \(state.rawValue)\(changed ? " — \(track?.title ?? "-")" : "")\(s === source ? "" : " (not the source)")")
+        guard phase != .switchingOn else { return }   // turnOn chooses the source itself, and pauses it on purpose
         if s !== source {
             // The other app starts playing: it becomes the source (one voice), the first one pauses, and a new run begins
             // at once — like a skip. Its pausing and stopping otherwise don't matter.
