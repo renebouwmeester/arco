@@ -1,54 +1,62 @@
-// A slice per track: each track the Music app plays becomes its own WAV of known length (the track's duration × the
-// device's rate, 24-bit stereo), growing on disk while the music plays. Roon gets each slice in its play slot or queue
-// slot and shows the track's real length; at a change of rate the next slice simply has the other rate.
+// The mix (6 Oct 2026, René: "bouw de mengvorm maar"): tracks at the same rate run on in one stream — gapless, as
+// Abbey Road's second side needs — and a new stream only begins where it must: at the start, at a skip, and where the
+// Music app changes the rate (it pauses there itself anyway). Roon's audio input can't do both gapless and a length per
+// track: every new play is a new start of Roon's stream to the endpoint (a seam of about half a second, measured from
+// Polythene Pam to Bathroom Window), and a track's length comes only from the WAV. So a run shows its own time in Roon,
+// and each track's title, artist, album and cover arrive when Roon reaches that track (update_track_info).
 //
-// The writer follows the music, not the notifications:
-// - A slice takes exactly its declared frames. What comes after belongs to the next track: it waits in the overflow
-//   until the bridge announces that track (Music's notification), then becomes the start of its slice.
-// - A slice is created when the first sound of its track arrives, so it gets the rate the device has by then (the Music
-//   app switches the rate during its short pause between tracks of different rates).
-// - When sound arrives at another rate while a slice is still open, that slice is filled with silence to its declared
-//   length (Roon expects those bytes) and the next one starts at the new rate.
+// A run is a WAV (24-bit stereo, declared at three hours at its rate) growing on disk while the music plays.
+// - A natural next track (the current one within two seconds of its end) simply goes on in the run; the bridge marks
+//   where, and updates Roon's track information when Roon gets there.
+// - A skip (or the first track): the current run is dropped at once and a new one begins with the next sound.
+// - A change of rate: the run is frozen where the rate changed — not dropped: Roon plays a few seconds behind and must
+//   still hear the end of what was written — and a new run begins with the first sound at the new rate. The bridge puts
+//   it in Roon's play slot just as Roon reaches the point of the change.
+// - Three hours at one rate: the same as a change of rate, with the current track going on in the next run.
+// - A new run begins with its first sound, by which time the device's rate is settled.
 // - The gate keeps the distance to Roon constant: at a pause of the Music app nothing is written until the first real
 //   sound — no silence of a pause in the music, nothing lost or repeated.
 //
 // Every request — the first, a second one, a Range request after a pause — gets exactly the bytes it asks for, as far
 // as they exist, and the rest as they arrive. A new request from the same address replaces the older readers of that
-// slice (a reconnecting renderer must not pile them up), at most eight.
+// run (a reconnecting renderer must not pile them up), at most eight.
 import Foundation
 import Network
 
 final class SliceStore: @unchecked Sendable {
-    struct Announcement {
+    struct Track {
         let info: [String: Any]       // Roon's track information (title, artist, album, cover)
         let durationMs: Int
-        /// Play it at once (a skip, the first track, a continuation) or queue it behind the current slice.
-        let immediate: Bool
     }
 
+    /// A run: one stream of consecutive tracks at one rate.
     final class Slice {
         let number: Int
         let path: String
         let rate: Double
         let frames: Int
+        /// The track it begins with.
         let info: [String: Any]
-        let immediate: Bool
+        /// Set when this run follows another one at a change of rate: that run's number and where it was frozen (ms).
+        /// The bridge plays this run when Roon gets there; without it, at once.
+        let follows: (number: Int, atMs: Int)?
         let file: URL
         var writer: FileHandle?
         var reader: FileHandle?
         var written = 0
         var readers: [Reader] = []
-        var closed = false            // no more writing (padded to its length, or cut off by a skip)
-        init(number: Int, path: String, rate: Double, frames: Int, info: [String: Any], immediate: Bool, directory: URL) {
+        var closed = false            // no more writing (frozen at a change of rate, or dropped)
+        init(number: Int, path: String, rate: Double, frames: Int, info: [String: Any], follows: (Int, Int)?, directory: URL) {
             self.number = number; self.path = path; self.rate = rate; self.frames = max(1, frames)
-            self.info = info; self.immediate = immediate
-            file = directory.appendingPathComponent("slice-\(number).pcm")
+            self.info = info; self.follows = follows
+            file = directory.appendingPathComponent("run-\(number).pcm")
             FileManager.default.createFile(atPath: file.path, contents: nil)
             writer = try? FileHandle(forWritingTo: file)
             reader = try? FileHandle(forReadingFrom: file)
         }
         var isFull: Bool { written >= frames }
         var bytes: Int { frames * SliceStore.bytesPerFrame }
+        func ms(_ frame: Int) -> Int { Int(Double(frame) / rate * 1000) }
     }
 
     final class Reader {
@@ -61,19 +69,25 @@ final class SliceStore: @unchecked Sendable {
     enum Gate { case writing, waitForSilence, waitForSound }
 
     static let bytesPerFrame = 6
-    /// Unique per session: Roon caches by URL, and slice 1 of a new session must never be served from slice 1 of the last
-    /// one (20:56:53: Roon showed "24/48, 1:14" — the old slice — for a new slice at 44.1 of 528 s).
+    private static let runHours = 3.0
+    /// Unique per session: Roon caches by URL, and run 1 of a new session must never be served from run 1 of the last
+    /// one (20:56:53: Roon showed "24/48, 1:14" — the old slice — for a new one at 44.1 of 528 s).
     private let session = String(UInt64.random(in: 0...UInt64.max), radix: 36)
     private let directory: URL
     private let lock = NSLock()
     private var slices: [Int: Slice] = [:]
     private var current: Slice?
-    private var pending: Announcement?
+    /// The track playing now, and the frame of the current run where it began.
+    private var track: Track?
+    private var trackStart = 0
+    /// A new run, beginning with the next sound: its first track, and what it follows (at a change of rate).
+    private var pendingRun: (track: Track, follows: (Int, Int)?)?
     private var overflow = Data()
     private var overflowRate: Double = 0
     private var gate: Gate = .waitForSound
     private var counter = 0
-    /// Called (on the main queue) when a slice begins: the bridge plays or queues it in Roon.
+    /// Called (on the main queue) when a run begins: the bridge plays it in Roon — at once, or when Roon reaches the point
+    /// where the run before it was frozen.
     var onSliceStarted: ((Slice) -> Void)?
 
     init(directory: URL) {
@@ -84,55 +98,59 @@ final class SliceStore: @unchecked Sendable {
 
     // MARK: - From the bridge (main)
 
-    /// The next track: its slice begins with its first sound. A skip ends the current slice at once.
-    func announce(_ a: Announcement) {
+    /// A new track. `newRun`: a skip or the first track — a new run with the next sound. Otherwise it goes on in the
+    /// current run, and the answer is where (run number, ms) — for the bridge to update Roon's track information there.
+    @discardableResult
+    func startTrack(_ t: Track, newRun: Bool) -> (number: Int, ms: Int)? {
         lock.lock(); defer { lock.unlock() }
-        if a.immediate, let c = current {
-            drop(c)
-            current = nil
-            overflow = Data()            // whatever came after the skip point belongs to the new track
+        track = t
+        if !newRun, let c = current, !c.closed {
+            trackStart = c.written
+            return (c.number, c.ms(c.written))
         }
-        pending = a
-        // The current slice is already full and the music of the next track is waiting: begin it now.
+        if newRun, let c = current { drop(c); current = nil; overflow = Data() }
+        // A skip begins a run of its own, at once. Otherwise a run is about to begin (right after a change of rate): it
+        // begins with this track, still following the frozen one.
+        pendingRun = (t, newRun ? nil : pendingRun?.follows)
         if current == nil, !overflow.isEmpty { begin(rate: overflowRate) }
+        return nil
+    }
+
+    /// How much of the current track is left in the run, in seconds (a natural end is near when this is small).
+    var remainingInTrack: Double? {
+        lock.lock(); defer { lock.unlock() }
+        return remainingInTrackLocked()
+    }
+
+    private func remainingInTrackLocked() -> Double? {
+        guard let c = current, let t = track else { return nil }
+        let end = trackStart + Int(Double(t.durationMs) / 1000 * c.rate)
+        return Double(end - c.written) / c.rate
     }
 
     /// The Music app paused: write on to real silence, then wait for sound.
     func pauseWriting() { lock.lock(); if gate == .writing { gate = .waitForSilence }; lock.unlock() }
 
-    /// Where the current slice is (for the log and the menu).
-    var status: (number: Int, writtenMs: Int, lengthMs: Int)? {
+    /// Where the current run is (for the log).
+    var status: (number: Int, writtenMs: Int)? {
         lock.lock(); defer { lock.unlock() }
         guard let c = current else { return nil }
-        return (c.number, Int(Double(c.written) / c.rate * 1000), Int(Double(c.frames) / c.rate * 1000))
+        return (c.number, c.ms(c.written))
     }
 
-    /// How much of the current slice is left, in seconds (a natural end is near when this is small).
-    var remainingSeconds: Double? {
-        lock.lock(); defer { lock.unlock() }
-        guard let c = current else { return nil }
-        return Double(c.frames - c.written) / c.rate
-    }
+    /// Whether a run is still the one being written (a superseded one must not go to Roon any more).
+    func isCurrent(_ s: Slice) -> Bool { lock.lock(); defer { lock.unlock() }; return current === s }
 
-    /// Roon plays `number`: older slices can go.
+    /// Roon plays `number`: older runs can go.
     func forget(before number: Int) {
         lock.lock(); defer { lock.unlock() }
-        for (n, s) in slices where n < number && s !== current {
-            for r in s.readers { r.connection.cancel() }
-            try? s.writer?.close(); try? s.reader?.close()
-            try? FileManager.default.removeItem(at: s.file)
-            slices[n] = nil
-        }
+        for (n, s) in slices where n < number && s !== current { remove(s) }
     }
 
     func closeAll() {
         lock.lock(); defer { lock.unlock() }
-        for s in slices.values {
-            for r in s.readers { r.connection.cancel() }
-            try? s.writer?.close(); try? s.reader?.close()
-            try? FileManager.default.removeItem(at: s.file)
-        }
-        slices = [:]; current = nil; pending = nil; overflow = Data(); gate = .waitForSound
+        for s in slices.values { remove(s) }
+        current = nil; pendingRun = nil; track = nil; overflow = Data(); gate = .waitForSound
     }
 
     // MARK: - From the capture queue
@@ -144,45 +162,38 @@ final class SliceStore: @unchecked Sendable {
         case .writing:
             break
         case .waitForSilence:
-            if firstSound == nil { gate = .waitForSound; Log.note("slices: silence — waiting for sound"); return }
+            if firstSound == nil { gate = .waitForSound; Log.note("runs: silence — waiting for sound"); return }
         case .waitForSound:
             guard let first = firstSound else { return }
             gate = .writing
-            Log.note("slices: sound — writing")
+            Log.note("runs: sound — writing")
             data = pcm.subdata(in: (first * Self.bytesPerFrame)..<pcm.count)
             count = frames - first
         }
         while count > 0 {
-            if let c = current, !c.closed, !c.isFull {
-                if c.rate != rate {
-                    // The device changed rate inside an open slice. Near its end: the boundary between two tracks — fill it
-                    // to its length (Roon expects those bytes); the music goes on in the next. Further from its end (the
-                    // Music app settles on a track's rate a few seconds after a start): cut it, and the rest of the same
-                    // track goes on at once as a slice of its own, instead of minutes of silence.
-                    let remaining = Double(c.frames - c.written) / c.rate
-                    if remaining < 2 || pending != nil {
-                        pad(c)
-                    } else {
-                        drop(c)
-                        current = nil
-                        pending = Announcement(info: c.info, durationMs: Int(remaining * 1000), immediate: true)
-                        Log.note("slices: \(c.number) cut at a change of rate, \(Int(remaining)) s go on in the next")
-                    }
+            if let c = current, !c.closed {
+                if c.rate != rate || c.isFull {
+                    // A change of rate (or three hours at one rate): freeze the run where it is — Roon still plays its
+                    // end — and go on in a new run at the new rate, with the track that plays now.
+                    c.closed = true
+                    current = nil
+                    let left = max(1000, Int((remainingInTrackLocked() ?? 0) * 1000))
+                    if let t = track { pendingRun = (Track(info: t.info, durationMs: left), (c.number, c.ms(c.written))) }
+                    Log.note("runs: \(c.number) frozen at \(c.ms(c.written)) ms (\(c.rate != rate ? "rate \(Int(c.rate)) → \(Int(rate))" : "three hours"))")
                     continue
                 }
                 let n = min(count, c.frames - c.written)
                 append(data.prefix(n * Self.bytesPerFrame), frames: n, to: c)
                 data = data.dropFirst(n * Self.bytesPerFrame); count -= n
-                if c.isFull { c.closed = true; for r in c.readers { pump(c, r) } }
                 continue
             }
-            // No open slice: the music of the next track. Begin its slice if it has been announced, else keep it.
-            if pending != nil {
+            if pendingRun != nil {
                 if overflowRate != rate { overflow = Data() }
                 overflowRate = rate
                 begin(rate: rate)
                 continue
             }
+            // No run to write to yet (the first track isn't announced): keep the music, up to half a minute.
             if overflowRate != rate { overflow = Data(); overflowRate = rate }
             overflow.append(data.prefix(count * Self.bytesPerFrame))
             let cap = Int(rate) * 30 * Self.bytesPerFrame
@@ -191,47 +202,42 @@ final class SliceStore: @unchecked Sendable {
         }
     }
 
-    /// Under the lock: the announced track gets its slice, starting with what waited in the overflow.
+    /// Under the lock: the pending run begins, starting with what waited in the overflow.
     private func begin(rate: Double) {
-        guard let a = pending else { return }
-        pending = nil
+        guard let p = pendingRun else { return }
+        pendingRun = nil
         counter += 1
         let s = Slice(number: counter, path: "/stream/\(session)-\(counter).wav", rate: rate,
-                      frames: Int(Double(a.durationMs) / 1000 * rate), info: a.info, immediate: a.immediate, directory: directory)
+                      frames: Int(Self.runHours * 3600 * rate), info: p.track.info, follows: p.follows, directory: directory)
         slices[s.number] = s
         current = s
+        track = p.track
+        trackStart = 0
         if overflowRate == rate, !overflow.isEmpty {
             let n = min(overflow.count / Self.bytesPerFrame, s.frames)
             append(overflow.prefix(n * Self.bytesPerFrame), frames: n, to: s)
         }
         overflow = Data()
-        Log.note("slices: \(s.number) begins at \(Int(rate)) Hz, \(a.durationMs / 1000) s\(a.immediate ? " (now)" : " (queued)")")
+        Log.note("runs: \(s.number) begins at \(Int(rate)) Hz\(p.follows.map { " — follows run \($0.0) at \($0.1) ms" } ?? " (now)")")
         let callback = onSliceStarted
         DispatchQueue.main.async { callback?(s) }
     }
 
-    /// Under the lock: a slice cut off before its end (a skip, a cut at a change of rate) is gone at once — its readers
-    /// closed, the next request a 404. Left open, its readers waited for bytes that never came, and Roon's downloader for
-    /// it held the zone's bandwidth: the next slice never started (6 Oct 2026, 21:02:33).
+    /// Under the lock: a run cut off at a skip is gone at once — its readers closed, the next request a 404. Left open,
+    /// its readers waited for bytes that never came, and Roon's downloader for it held the zone's bandwidth: the next one
+    /// never started (6 Oct 2026, 21:02:33).
     private func drop(_ s: Slice) {
+        remove(s)
+        Log.note("runs: \(s.number) dropped (a skip)")
+    }
+
+    private func remove(_ s: Slice) {
         s.closed = true
         for r in s.readers { r.connection.cancel() }
         s.readers = []
         try? s.writer?.close(); try? s.reader?.close()
         try? FileManager.default.removeItem(at: s.file)
         slices[s.number] = nil
-        Log.note("slices: \(s.number) dropped (cut off before its end)")
-    }
-
-    /// Whether a slice is still the one being written (a superseded one must not go to Roon any more).
-    func isCurrent(_ s: Slice) -> Bool { lock.lock(); defer { lock.unlock() }; return current === s }
-
-    private func pad(_ s: Slice) {
-        let rest = s.frames - s.written
-        if rest > 0 { append(Data(count: rest * Self.bytesPerFrame), frames: rest, to: s) }
-        s.closed = true
-        current = nil
-        Log.note("slices: \(s.number) padded with \(String(format: "%.2f", Double(rest) / s.rate)) s of silence")
     }
 
     private func append(_ d: Data, frames n: Int, to s: Slice) {
