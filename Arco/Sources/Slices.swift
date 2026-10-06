@@ -142,6 +142,20 @@ final class SliceStore: @unchecked Sendable {
         }
     }
 
+    /// Released from the held-back part after a pause (see `release`); back to nothing when the music goes on.
+    private var released = 0
+
+    /// After Roon was told to pause: a little of the held-back music, to wake Roon's reader. With Music stopped no data
+    /// comes, and a reader asleep at the edge of the stream ("[prebuffer] sleeping in read — this isn't good") kept Roon
+    /// from passing the pause on to the KEF until it let the KEF go five seconds later (21:46:19); after that the restart
+    /// took seconds too. It is music from before the pause point, which Roon plays after resuming anyway.
+    func release(seconds: Double) {
+        lock.lock(); defer { lock.unlock() }
+        guard let c = current, !c.closed else { return }
+        released += Int(seconds * c.rate)
+        for r in c.readers { pump(c, r) }
+    }
+
     /// The last 0.4 s of a run are held back from Roon: room to take out the tail of a pause before anyone has read it.
     /// (Roon plays seconds behind anyway.)
     private static let holdBackSeconds = 0.4
@@ -211,6 +225,7 @@ final class SliceStore: @unchecked Sendable {
         case .waitForSound:
             guard let first = firstSound else { return }
             gate = .writing
+            released = 0
             Log.note("runs: sound — writing")
             data = pcm.subdata(in: (first * Self.bytesPerFrame)..<pcm.count)
             count = frames - first
@@ -341,7 +356,7 @@ final class SliceStore: @unchecked Sendable {
         guard !r.busy else { return }
         if r.offset >= s.bytes { r.connection.cancel(); return }
         // Held back: the last 0.4 s of an open run (see trimTail); a frozen run gives all it has.
-        let held = s.closed ? 0 : Int(Self.holdBackSeconds * s.rate)
+        let held = s.closed ? 0 : max(0, Int(Self.holdBackSeconds * s.rate) - released)
         let available = max(0, s.written - held) * Self.bytesPerFrame
         guard r.offset < available, let reader = s.reader else { return }
         let count = min(262_144, available - r.offset)

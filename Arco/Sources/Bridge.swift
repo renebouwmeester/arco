@@ -370,6 +370,12 @@ final class Bridge: ObservableObject {
                     }
                     self.roonControl("pause")
                     self.phase = .paused
+                    // Keep Roon's reader awake while it passes the pause on, a little music at a time — all of the held-back
+                    // part, as Roon's own "Paused" comes also when the KEF was not paused (21:46:19) and says nothing.
+                    for _ in 0..<10 where self.phase == .paused {
+                        self.store?.release(seconds: 0.04)
+                        try? await Task.sleep(for: .milliseconds(40))
+                    }
                 }
             } else if state == .playing {
                 pendingPause?.cancel(); pendingPause = nil
