@@ -104,16 +104,26 @@ final class Bridge: ObservableObject {
         Log.note("on: zone \(zone.name)")
         guard await server.start() != nil else { return fail("Could not open the stream port") }
         zoneID = zone.id
-        AudioDevices.setSampleRate(Self.fixedRate, of: arco)
+        // Basso's lesson for a change of output or clock: pause, change, resume. Switching the output under a playing
+        // Music app makes it stumble (20:27:58: paused and on again 42 ms later — a hiccup in the music itself).
+        music.refresh()
+        let wasPlaying = music.state == .playing
+        if wasPlaying { music.pause(); try? await Task.sleep(for: .milliseconds(300)) }
         if let current = AudioDevices.defaultOutput, current != arco, let uid = AudioDevices.uid(of: current) {
             UserDefaults.standard.set(uid, forKey: Self.previousOutputKey)
         }
         AudioDevices.setDefaultOutput(arco)
+        // The rate after the switch: macOS gives a device that becomes the default output its remembered format (Arco
+        // stayed at 48 kHz although 44.1 was asked before the switch — and Music resampled to it).
+        AudioDevices.setSampleRate(Self.fixedRate, of: arco)
+        for _ in 0..<20 where AudioDevices.sampleRate(of: arco) != Self.fixedRate { try? await Task.sleep(for: .milliseconds(50)) }
+        Log.note("device: Arco at \(Int(AudioDevices.sampleRate(of: arco) ?? 0)) Hz (asked \(Int(Self.fixedRate)))")
         if let error = capture.start(device: arco) { return fail(error) }
         Log.note("capture: reading the Arco input at \(Int(capture.rate)) Hz")
-        music.refresh()
-        if music.state == .playing { await startSession() } else { phase = .waitingForMusic }
+        phase = .waitingForMusic
         connection.setStatus("Playing to \(zone.name)")
+        // Music starts again on Arco; its "playing" begins the session.
+        if wasPlaying { music.play() }
     }
 
     func turnOff() {
