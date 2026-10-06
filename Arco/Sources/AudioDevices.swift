@@ -31,6 +31,29 @@ enum AudioDevices {
         return uid.takeRetainedValue() as String
     }
 
+    /// The Mac's own output (built-in speakers or headphone jack) — where the sound goes back to when Arco doesn't know
+    /// the previous output (macOS can make a freshly installed Arco the default by itself).
+    static var builtInOutput: AudioDeviceID? {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
+                                                 mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size) == noErr else { return nil }
+        var devices = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &devices) == noErr else { return nil }
+        return devices.first { device in
+            var transport: UInt32 = 0
+            var tsize = UInt32(MemoryLayout<UInt32>.size)
+            var t = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyTransportType,
+                                               mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+            guard AudioObjectGetPropertyData(device, &t, 0, nil, &tsize, &transport) == noErr,
+                  transport == kAudioDeviceTransportTypeBuiltIn else { return false }
+            var o = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreams,
+                                               mScope: kAudioObjectPropertyScopeOutput, mElement: kAudioObjectPropertyElementMain)
+            var osize: UInt32 = 0
+            return AudioObjectGetPropertyDataSize(device, &o, 0, nil, &osize) == noErr && osize > 0
+        }
+    }
+
     static var defaultOutput: AudioDeviceID? {
         var id = AudioDeviceID(kAudioObjectUnknown)
         var size = UInt32(MemoryLayout<AudioDeviceID>.size)

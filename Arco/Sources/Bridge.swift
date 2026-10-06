@@ -301,8 +301,10 @@ final class Bridge: ObservableObject {
 
     private func restoreOutput() {
         guard let arco = AudioDevices.arco, AudioDevices.defaultOutput == arco else { return }
-        if let uid = UserDefaults.standard.string(forKey: Self.previousOutputKey), let previous = AudioDevices.device(uid: uid) {
-            AudioDevices.setDefaultOutput(previous)
+        let remembered = UserDefaults.standard.string(forKey: Self.previousOutputKey).flatMap(AudioDevices.device(uid:))
+        if let back = remembered ?? AudioDevices.builtInOutput {
+            AudioDevices.setDefaultOutput(back)
+            Log.note("output: back to \(AudioDevices.uid(of: back) ?? "?")\(remembered == nil ? " (the Mac's own — no previous output known)" : "")")
         }
     }
 
