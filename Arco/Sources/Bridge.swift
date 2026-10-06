@@ -338,9 +338,12 @@ final class Bridge: ObservableObject {
             if state == .playing { Task { await startSession() } }
         case .playing, .paused, .starting:
             if changed, let track, let store {
-                // Within two seconds of its end: the natural next track, going on in the run. Further from it: a skip.
+                // Within eight seconds of its end: the natural next track, going on in the run. Further from it: a skip.
+                // Eight, not two: what is left of the first track of a session is estimated from Music's position at the
+                // start, and that was 6 s off (21:27:53, "The End"). Taking a natural transition for a skip would drop the
+                // run, and Roon would lose the end of the track; a skip in the last seconds is merely heard a little later.
                 let left = store.remainingInTrack ?? 0
-                let natural = left < 2
+                let natural = left < 8
                 let info = makeInfo(track)
                 if let mark = store.startTrack(.init(info: info, durationMs: track.durationMs), newRun: !natural) {
                     marks.append((mark.number, mark.ms, info))
