@@ -37,7 +37,7 @@ targets:
         # Sparkle: the appcast of the latest GitHub Release, and the public half of René's EdDSA key (the private half
         # stays in his keychain; release.sh signs each package with it).
         SUFeedURL: https://github.com/renebouwmeester/arco/releases/latest/download/appcast.xml
-        SUPublicEDKey: ""
+        SUPublicEDKey: "m6TCPwC6m7TDfRhfn2h2eIHsixrBoKT1RL/Cm6IRvXU="
         NSHumanReadableCopyright: "© 2026 René Bouwmeester · Apache License 2.0"
     entitlements:
       path: Arco/Arco.entitlements
