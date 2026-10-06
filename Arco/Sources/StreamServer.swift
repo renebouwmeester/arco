@@ -7,7 +7,7 @@ import Network
 final class StreamServer: @unchecked Sendable {
     private var listener: NWListener?
     private let lock = NSLock()
-    private var stream: LiveStream?
+    private var store: SliceStore?
     private var covers: [String: (data: Data, type: String)] = [:]
     private var coverOrder: [String] = []
     private var icon: Data?
@@ -33,7 +33,7 @@ final class StreamServer: @unchecked Sendable {
         return nil
     }
 
-    func setStream(_ s: LiveStream?) { lock.lock(); stream = s; lock.unlock() }
+    func setStore(_ s: SliceStore?) { lock.lock(); store = s; lock.unlock() }
 
     /// Keeps a cover for Roon to fetch; the last twenty stay.
     func addCover(_ data: Data, type: String, key: String) {
@@ -74,8 +74,8 @@ final class StreamServer: @unchecked Sendable {
     private func route(_ connection: NWConnection, method: String, path: String, range: String?) {
         let headOnly = method == "HEAD"
         if path.hasPrefix("/stream/") {
-            lock.lock(); let s = stream; lock.unlock()
-            if let s, path == s.path { s.serve(connection, range: range, headOnly: headOnly); return }
+            lock.lock(); let s = store; lock.unlock()
+            if let s, s.serve(path: path, connection, range: range, headOnly: headOnly) { return }
             return respond(connection, status: "404 Not Found", type: "text/plain", body: Data())
         }
         if path.hasPrefix("/cover/") {

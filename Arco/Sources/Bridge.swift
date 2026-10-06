@@ -1,19 +1,24 @@
-// The bridge: the Music app → the Arco output → its loopback → one growing stream → Roon's audio input on the chosen zone.
+// The bridge: the Music app → the Arco output → its loopback → a slice per track → Roon's audio input on the chosen zone.
 //
 // On: the system output becomes Arco (the previous one is remembered, also across a crash), the loopback is read, and as
-// soon as Music plays a session begins on the zone and the stream goes into its play slot, with the current track's
-// title, artist, album and cover.
+// soon as Music plays a session begins on the zone. The current track becomes the first slice, in Roon's play slot.
 //
-// A new track in Music is marked at the stream's position; Roon plays a few seconds behind, so the new track information
-// goes to Roon when Roon's own position (its Time events, in the same stream) reaches that mark — not when Music starts it.
+// A slice per track (milestone 4): every track is a WAV of its own length, with its own title, artist, album and cover,
+// so Roon shows the real length and the real track. Roon plays a few seconds behind, which gives Arco those seconds to
+// get the next track ready:
+// - A natural transition (the current slice is at, or within two seconds of, its end): the next track's slice goes into
+//   Roon's queue slot. When Roon reports the current one ended, the queued one goes into the play slot — on RAAT and
+//   Squeeze Roon does not take it from the queue itself, and this does not repeat anything (Basso, 5 Oct 2026).
+// - A skip (next, previous, another track or album, or more than two seconds left): the new slice goes into the play
+//   slot at once.
+// - The rate: with Lossless on, the Music app sets the Arco device to each track's own rate. A slice begins with its
+//   track's first sound, by which time the rate is settled, so each slice carries its own rate (see SliceStore).
 //
-// Pause and resume work both ways: Music paused → Roon pauses (and the stream waits for sound); Roon's pause or play
-// button → Music. Events that Arco caused itself are ignored for a few seconds. Roon's next and previous go to Music.
+// Pause and resume work both ways: Music paused → the slices wait for sound at once, and Roon pauses when it lasts 0.6 s;
+// Roon's pause or play button → Music. Events that Arco caused itself are ignored for a few seconds. Roon's next and
+// previous go to Music.
 //
 // Off, quit, or the zone taken over in Roon: the session ends and the previous output comes back.
-//
-// The rate: with Lossless on, the Music app sets the Arco device to each track's own rate; Arco follows with a new
-// stream. Milestone 4 makes that seamless with a stream per track of known length.
 import AppKit
 import ArcoRoon
 import AVFoundation
@@ -39,13 +44,21 @@ final class Bridge: ObservableObject {
     private let capture = Capture()
     private let music = MusicWatcher()
     private var session: AudioInputSession?
-    private var stream: LiveStream?
-    private var streamNumber = 0
+    private var store: SliceStore?
     private var zoneID: String?
-    /// Track starts in the stream that Roon has not reached yet.
-    private var marks: [(ms: Int, info: JSON)] = []
+    private var address: String?
+    /// The slice Roon plays, and the one waiting in its queue slot.
+    private var roonSlice = 0
+    private var queued: SliceStore.Slice?
     /// Until when Roon's pause / play events are our own doing.
     private var ownUntil = Date.distantPast
+    private var coverNumber = 0
+    private var pendingPause: Task<Void, Never>?
+    private var termSource: DispatchSourceSignal?
+    private var roonPositionMs = 0
+    private var rateWatch: AudioObjectPropertyListenerBlock?
+    private var arcoDevice: AudioDeviceID?
+    private var heartbeat: Timer?
     private static let previousOutputKey = "PreviousOutputUID"
     private let directory = FileManager.default.temporaryDirectory.appendingPathComponent("arco", isDirectory: true)
 
@@ -53,8 +66,8 @@ final class Bridge: ObservableObject {
         self.connection = connection
         try? FileManager.default.removeItem(at: directory)   // leftovers of an earlier run
         music.onChange = { [weak self] state, track, changed in self?.musicChanged(state, track, changed) }
-        let holder = streamHolder
-        capture.onAudio = { pcm, frames, firstSound in holder.write(pcm, frames, firstSound) }
+        let holder = storeHolder, capture = capture
+        capture.onAudio = { pcm, frames, firstSound in holder.write(pcm, frames, firstSound, rate: capture.rate) }
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.turnOff() }
         }
@@ -68,7 +81,7 @@ final class Bridge: ObservableObject {
         }
         term.resume()
         termSource = term
-        restoreOutputAfterCrash()
+        restoreOutput()   // Arco quit unexpectedly with the output on Arco: give the Mac its own back
     }
 
     /// On while it sends or is about to; after a failure the switch is off again (the message stays).
@@ -78,13 +91,6 @@ final class Bridge: ObservableObject {
         default: return true
         }
     }
-    private var coverNumber = 0
-    private var pendingPause: Task<Void, Never>?
-    private var termSource: DispatchSourceSignal?
-    private var roonPositionMs = 0
-    private var rateWatch: AudioObjectPropertyListenerBlock?
-    private var arcoDevice: AudioDeviceID?
-    private var heartbeat: Timer?
     static var driverInstalled: Bool { AudioDevices.arco != nil }
 
     // MARK: - On and off
@@ -105,6 +111,10 @@ final class Bridge: ObservableObject {
         }
         Log.note("on: zone \(zone.name)")
         guard await server.start() != nil else { return fail("Could not open the stream port") }
+        guard let host = connection.coreHost, let address = Discovery.localAddress(toward: host) else {
+            return fail("Can't reach the Roon Core from this Mac")
+        }
+        self.address = address
         zoneID = zone.id
         // Basso's lesson for a change of output or clock: pause, change, resume. Switching the output under a playing
         // Music app makes it stumble (20:27:58: paused and on again 42 ms later — a hiccup in the music itself).
@@ -115,14 +125,15 @@ final class Bridge: ObservableObject {
             UserDefaults.standard.set(uid, forKey: Self.previousOutputKey)
         }
         AudioDevices.setDefaultOutput(arco)
-        // No rate is forced: with Lossless on, the Music app sets the device to each track's own rate (6 Oct 2026: a
-        // 48 kHz master took Arco from 44.1 to 48 five seconds after it started playing). Arco follows (see below).
+        // No rate is forced: with Lossless on, the Music app sets the device to each track's own rate.
         Log.note("device: Arco at \(Int(AudioDevices.sampleRate(of: arco) ?? 0)) Hz")
+        let s = SliceStore(directory: directory)
+        s.onSliceStarted = { [weak self] slice in self?.sliceStarted(slice) }
+        store = s
+        storeHolder.set(s)
+        server.setStore(s)
         if let error = capture.start(device: arco) { return fail(error) }
         Log.note("capture: reading the Arco input at \(Int(capture.rate)) Hz")
-        // The Music app sets the device's rate itself when it (re)opens its output — 48 kHz three seconds after Arco set
-        // 44.1 (6 Oct 2026, 20:34:02; most likely its Dolby Atmos rendering). Arco follows instead of fighting: a new
-        // rate is a new stream at that rate. (Until then the stream was labelled 44.1 and carried 48: 9% slow in Roon.)
         rateWatch = AudioDevices.watchSampleRate(of: arco) { [weak self] rate in
             MainActor.assumeIsolated { self?.deviceRateChanged(rate) }
         }
@@ -137,15 +148,17 @@ final class Bridge: ObservableObject {
         if let rateWatch, let arcoDevice { AudioDevices.stopWatchingSampleRate(of: arcoDevice, rateWatch) }
         rateWatch = nil
         heartbeat?.invalidate(); heartbeat = nil
+        pendingPause?.cancel(); pendingPause = nil
         roonPositionMs = 0
+        roonSlice = 0
+        queued = nil
         session?.end()
         session = nil
         capture.stop()
-        server.setStream(nil)
-        streamHolder.set(nil)
-        stream?.close()
-        stream = nil
-        marks = []
+        server.setStore(nil)
+        storeHolder.set(nil)
+        store?.closeAll()
+        store = nil
         zoneID = nil
         restoreOutput()
         if phase != .off { connection.setStatus("Ready") }
@@ -163,55 +176,73 @@ final class Bridge: ObservableObject {
     // MARK: - The session in Roon
 
     private func startSession() async {
-        guard let zoneID, let host = connection.coreHost, let address = Discovery.localAddress(toward: host) else {
-            return fail("Can't reach the Roon Core from this Mac")
-        }
+        guard let zoneID, let address, let store else { return }
         phase = .starting
         let s = AudioInputSession(connection: connection, zoneID: zoneID)
         s.onEvent = { [weak self] event in self?.roonEvent(event) }
         guard await s.begin(displayName: "Arco", iconURL: "http://\(address):\(server.port)/icon.png") else {
             return fail("Roon didn't start a session on this zone")
         }
-        Log.note("session: began on the zone; stream at http://\(address):\(server.port)")
         session = s
-        streamNumber += 1
-        let live = LiveStream(number: streamNumber, rate: capture.rate, directory: directory)
-        stream = live
-        streamHolder.set(live)
-        server.setStream(live)
-        marks = []
-        // A little of the music first, so Roon's first read finds something.
-        for _ in 0..<50 where live.positionMs < 500 { try? await Task.sleep(for: .milliseconds(100)) }
-        Log.note("stream \(streamNumber): \(live.positionMs) ms of music before the play request")
-        if live.positionMs == 0 {
-            return fail("No sound reaches Arco. Is the Music app playing, to the output Arco?")
+        Log.note("session: began on the zone; slices at http://\(address):\(server.port)")
+        // The first slice: the current track, from where Music is now.
+        guard let track = music.track else { return }
+        let left = max(1000, track.durationMs - Int(music.position() * 1000))
+        store.announce(.init(info: makeInfo(track), durationMs: left, immediate: true))
+        // No sound within five seconds: say so instead of waiting for nothing.
+        try? await Task.sleep(for: .seconds(5))
+        if session === s, phase == .starting, store.status == nil {
+            fail("No sound reaches Arco. Is the Music app playing, to the output Arco?")
         }
-        let info = makeInfo(music.track, address: address)
-        ownUntil = Date().addingTimeInterval(3)
-        let answer = await s.play(track: String(streamNumber), url: "http://\(address):\(server.port)\(live.path)", info: info)
-        guard session === s else { return }
-        Log.note("play: Roon answered \(answer)")
-        if answer == "Playing" || answer == "Unpaused" {
-            phase = .playing
-            heartbeat?.invalidate()
-            heartbeat = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    guard let self, let live = self.stream else { return }
-                    Log.note("stream \(live.number): \(live.positionMs) ms written, Roon at \(self.roonPositionMs) ms")
-                }
-            }
-        } else { fail("Roon: \(answer)") }
     }
 
-    private func makeInfo(_ track: MusicWatcher.Track?, address: String? = nil) -> JSON {
-        guard let track else { return AudioInputSession.info(title: "Arco", artist: "", album: "", imageURL: nil) }
+    /// A slice began (its track's first sound arrived): into Roon — at once, or queued behind the current one.
+    private func sliceStarted(_ slice: SliceStore.Slice) {
+        guard let s = session, let address else { return }
+        let url = "http://\(address):\(server.port)\(slice.path)"
+        if slice.immediate {
+            queued = nil
+            Task { @MainActor in
+                // A little of the music first, so Roon's first read finds something.
+                for _ in 0..<30 where (self.store?.status?.writtenMs ?? 0) < 500 { try? await Task.sleep(for: .milliseconds(100)) }
+                guard self.session === s else { return }
+                self.ownUntil = Date().addingTimeInterval(3)
+                let answer = await s.play(track: String(slice.number), url: url, info: slice.info)
+                Log.note("play slice \(slice.number): Roon answered \(answer)")
+                guard self.session === s else { return }
+                if answer == "Playing" || answer == "Unpaused" {
+                    self.roonSlice = slice.number
+                    if self.phase == .starting { self.phase = .playing; self.startHeartbeat() }
+                } else if self.phase == .starting {
+                    self.fail("Roon: \(answer)")
+                }
+            }
+        } else {
+            queued = slice
+            Task { @MainActor in
+                let answer = await s.play(track: String(slice.number), url: url, info: slice.info, slot: "queue")
+                Log.note("queue slice \(slice.number): Roon answered \(answer)")
+            }
+        }
+    }
+
+    private func startHeartbeat() {
+        heartbeat?.invalidate()
+        heartbeat = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, let status = self.store?.status else { return }
+                Log.note("slice \(status.number): \(status.writtenMs) of \(status.lengthMs) ms written; Roon in slice \(self.roonSlice) at \(self.roonPositionMs) ms")
+            }
+        }
+    }
+
+    private func makeInfo(_ track: MusicWatcher.Track) -> JSON {
         var imageURL: String?
-        let host = address ?? connection.coreHost.flatMap(Discovery.localAddress(toward:))
-        if let cover = music.artwork(), let host {
+        if let cover = music.artwork(), let address {
             coverNumber += 1
             let key = "c\(coverNumber).\(cover.type == "image/png" ? "png" : "jpg")"
             server.addCover(cover.data, type: cover.type, key: key)
-            imageURL = "http://\(host):\(server.port)/cover/\(key)"
+            imageURL = "http://\(address):\(server.port)/cover/\(key)"
         }
         return AudioInputSession.info(title: track.title, artist: track.artist, album: track.album, imageURL: imageURL)
     }
@@ -219,92 +250,80 @@ final class Bridge: ObservableObject {
     private func roonEvent(_ event: AudioInputSession.Event) {
         let own = Date() < ownUntil
         if case .time = event {} else { Log.note("roon: \(event)\(own ? " (ours)" : "")") }
-        // Only the current stream counts: a stream replaced at a change of rate still reports its end or its error.
-        let current = String(streamNumber)
+        // Events of a slice Roon left behind (an end, an error after a skip) don't count.
+        func current(_ track: String) -> Bool { Int(track) ?? 0 >= roonSlice }
         switch event {
-        case .time(let track, _), .playing(let track), .paused(let track), .unpaused(let track), .stopped(let track),
-             .ended(let track), .failed(let track, _):
-            if track != current { return }
-        default: break
-        }
-        switch event {
-        case .time(_, let ms):
+        case .playing(let track):
+            guard let n = Int(track), n >= roonSlice else { return }
+            roonSlice = n
+            if queued?.number == n { queued = nil }
+            store?.forget(before: n)
+        case .time(let track, let ms):
+            guard let n = Int(track), n >= roonSlice else { return }
+            if n > roonSlice { roonSlice = n; if queued?.number == n { queued = nil }; store?.forget(before: n) }
             roonPositionMs = ms
-            // Roon reached the start of the next track in the stream: now it shows it.
-            while let first = marks.first, ms >= first.ms - 300 {
-                marks.removeFirst()
-                Log.note("roon reached \(first.ms) ms: track information updated")
-                let info = first.info
-                Task { await session?.updateInfo(track: String(streamNumber), info: info) }
+        case .ended(let track):
+            guard Int(track) == roonSlice else { return }
+            // The end of a slice: the queued one into the play slot (Roon doesn't take it from the queue itself), with a
+            // fresh URL — a long-waiting queued slice can have a failed pre-fetch in Roon's cache (Basso, 5 Oct 2026).
+            if let next = queued, let s = session, let address {
+                queued = nil
+                let url = "http://\(address):\(server.port)\(next.path)?n=\(Int(Date().timeIntervalSince1970 * 1000))"
+                Task { @MainActor in
+                    let answer = await s.play(track: String(next.number), url: url, info: next.info)
+                    Log.note("slice \(next.number) into the play slot at the end of \(track): Roon answered \(answer)")
+                }
             }
-        case .paused:
+        case .paused(let track):
+            guard current(track) else { return }
             if !own { ownUntil = Date().addingTimeInterval(3); music.pause() }
             phase = .paused
-        case .unpaused:
+        case .unpaused(let track):
+            guard current(track) else { return }
             if !own { ownUntil = Date().addingTimeInterval(3); music.play() }
             phase = .playing
-        case .stopped:
+        case .stopped(let track):
             // Roon stops a zone five seconds into a pause; a stop while playing is the user's.
+            guard current(track) else { return }
             if phase == .playing, !own { ownUntil = Date().addingTimeInterval(3); music.pause() }
+        case .failed(let track, let reason):
+            guard Int(track) == roonSlice, phase != .starting else { return }
+            fail("Roon: \(reason)")
         case .control(let control):
             if control.contains("next") { music.next() } else if control.contains("prev") { music.previous() }
-        case .ended:
-            fail("The stream reached its end (three hours) — turn Arco on again")
-        case .failed(_, let reason):
-            fail("Roon: \(reason)")
         case .sessionEnded:
             // Someone played something else on the zone: give the Mac its output back.
             turnOff()
-        case .playing:
-            break
         }
     }
 
-    /// The device changed rate: the stream so far ends, a new one at the new rate goes into Roon's play slot. Roon plays
-    /// a few seconds behind, so those seconds of the old stream are lost — a short gap, never a wrong speed.
+    /// The device changed rate. The slices follow by themselves (a slice gets the rate its first sound arrives at); the
+    /// capture only needs to know, to label what it reads.
     private func deviceRateChanged(_ rate: Double) {
         guard rate != capture.rate else { return }
         Log.note("device: Arco changed to \(Int(rate)) Hz (was \(Int(capture.rate)))")
         capture.rate = rate
-        guard let s = session, phase == .playing || phase == .paused || phase == .starting,
-              let host = connection.coreHost, let address = Discovery.localAddress(toward: host) else { return }
-        streamNumber += 1
-        let live = LiveStream(number: streamNumber, rate: rate, directory: directory)
-        // The old stream stays open until Roon plays the new one: closing it under Roon's read was a MediaError that ended
-        // the session (20:36:28).
-        let old = stream
-        stream = live
-        streamHolder.set(live)
-        server.setStream(live)
-        marks = []
-        let number = streamNumber
-        Task { @MainActor in
-            for _ in 0..<50 where live.positionMs < 500 { try? await Task.sleep(for: .milliseconds(100)) }
-            guard self.session === s, self.stream === live else { return }
-            self.ownUntil = Date().addingTimeInterval(3)
-            let answer = await s.play(track: String(number), url: "http://\(address):\(self.server.port)\(live.path)",
-                                      info: self.makeInfo(self.music.track, address: address))
-            Log.note("play (new rate \(Int(rate))): Roon answered \(answer)")
-            old?.close()
-        }
     }
 
     // MARK: - The Music app
 
     private func musicChanged(_ state: MusicWatcher.State, _ track: MusicWatcher.Track?, _ changed: Bool) {
-        Log.note("music: \(state.rawValue)\(changed ? " — \(track?.title ?? "-")" : "") at stream \(stream?.positionMs ?? -1) ms")
+        Log.note("music: \(state.rawValue)\(changed ? " — \(track?.title ?? "-")" : "")")
         switch phase {
         case .waitingForMusic:
             if state == .playing { Task { await startSession() } }
         case .playing, .paused, .starting:
-            if changed, let track, let live = stream {
-                marks.append((live.positionMs, makeInfo(track)))
+            if changed, let track, let store {
+                // Within two seconds of its end: the natural next track, queued. Further from it: a skip, at once.
+                let left = store.remainingSeconds ?? 0
+                let natural = left < 2
+                Log.note("next track: \(track.title) — \(natural ? "queued" : "at once") (\(String(format: "%.1f", left)) s left in the slice)")
+                store.announce(.init(info: makeInfo(track), durationMs: track.durationMs, immediate: !natural))
             }
             if state != .playing, phase == .playing {
-                // The stream closes at once — whatever silence Music leaves is not written (20:31:59: Music paused itself
-                // for 0.22 s, seven seconds after the start, and that gap went into the stream). Roon only hears of a
-                // pause that lasts: Music also pauses itself for a moment when its output changes (20:18:49: 0.14 s).
-                stream?.pauseWriting()
+                // The slices close at once — whatever silence Music leaves is not written. Roon only hears of a pause
+                // that lasts: Music also pauses itself for a moment when its output or rate changes.
+                store?.pauseWriting()
                 pendingPause?.cancel()
                 pendingPause = Task { @MainActor [weak self] in
                     try? await Task.sleep(for: .milliseconds(600))
@@ -332,15 +351,15 @@ final class Bridge: ObservableObject {
 
     // MARK: - The audio thread
 
-    /// The stream the capture thread writes to — the audio thread never touches the bridge itself.
-    private let streamHolder = StreamHolder()
-    final class StreamHolder: @unchecked Sendable {
+    /// The store the capture thread writes to — the audio thread never touches the bridge itself.
+    private let storeHolder = StoreHolder()
+    final class StoreHolder: @unchecked Sendable {
         private let lock = NSLock()
-        private var stream: LiveStream?
-        func set(_ s: LiveStream?) { lock.lock(); stream = s; lock.unlock() }
-        func write(_ pcm: Data, _ frames: Int, _ firstSound: Int?) {
-            lock.lock(); let s = stream; lock.unlock()
-            s?.write(pcm, frames: frames, firstSound: firstSound)
+        private var store: SliceStore?
+        func set(_ s: SliceStore?) { lock.lock(); store = s; lock.unlock() }
+        func write(_ pcm: Data, _ frames: Int, _ firstSound: Int?, rate: Double) {
+            lock.lock(); let s = store; lock.unlock()
+            s?.write(pcm, frames: frames, firstSound: firstSound, rate: rate)
         }
     }
 
@@ -354,7 +373,4 @@ final class Bridge: ObservableObject {
             Log.note("output: back to \(AudioDevices.uid(of: back) ?? "?")\(remembered == nil ? " (the Mac's own — no previous output known)" : "")")
         }
     }
-
-    /// Arco is the output but the bridge is off (Arco quit unexpectedly): the Mac's own output back.
-    private func restoreOutputAfterCrash() { restoreOutput() }
 }

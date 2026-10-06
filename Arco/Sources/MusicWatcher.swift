@@ -79,6 +79,12 @@ final class MusicWatcher {
         onChange?(state, track, changed)
     }
 
+    /// Where Music is in the current track, in seconds.
+    func position() -> Double {
+        guard Self.isRunning, let text = Self.run(#"tell application "Music" to get player position"#)?.stringValue else { return 0 }
+        return Double(text.replacingOccurrences(of: ",", with: ".")) ?? 0
+    }
+
     // MARK: - Buttons
 
     func play() { _ = Self.run(#"tell application "Music" to play"#) }
