@@ -58,6 +58,16 @@ final class Bridge: ObservableObject {
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.turnOff() }
         }
+        // A plain kill (SIGTERM — an update, a restart) skips willTerminate: end the session in Roon and give the Mac its
+        // output back anyway, then quit. (Without this Roon kept fetching the old address for minutes.)
+        signal(SIGTERM, SIG_IGN)
+        let term = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        term.setEventHandler { [weak self] in
+            MainActor.assumeIsolated { self?.turnOff() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { exit(0) }
+        }
+        term.resume()
+        termSource = term
         restoreOutputAfterCrash()
     }
 
@@ -70,6 +80,9 @@ final class Bridge: ObservableObject {
     }
     private var coverNumber = 0
     private var pendingPause: Task<Void, Never>?
+    private var termSource: DispatchSourceSignal?
+    private var roonPositionMs = 0
+    private var heartbeat: Timer?
     static var driverInstalled: Bool { AudioDevices.arco != nil }
 
     // MARK: - On and off
@@ -104,6 +117,8 @@ final class Bridge: ObservableObject {
     }
 
     func turnOff() {
+        heartbeat?.invalidate(); heartbeat = nil
+        roonPositionMs = 0
         session?.end()
         session = nil
         capture.stop()
@@ -157,7 +172,16 @@ final class Bridge: ObservableObject {
         let answer = await s.play(track: String(streamNumber), url: "http://\(address):\(server.port)/stream/\(streamNumber).wav", info: info)
         guard session === s else { return }
         Log.note("play: Roon answered \(answer)")
-        if answer == "Playing" || answer == "Unpaused" { phase = .playing } else { fail("Roon: \(answer)") }
+        if answer == "Playing" || answer == "Unpaused" {
+            phase = .playing
+            heartbeat?.invalidate()
+            heartbeat = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, let live = self.stream else { return }
+                    Log.note("stream \(live.number): \(live.positionMs) ms written, Roon at \(self.roonPositionMs) ms")
+                }
+            }
+        } else { fail("Roon: \(answer)") }
     }
 
     private func makeInfo(_ track: MusicWatcher.Track?, address: String? = nil) -> JSON {
@@ -178,6 +202,7 @@ final class Bridge: ObservableObject {
         if case .time = event {} else { Log.note("roon: \(event)\(own ? " (ours)" : "")") }
         switch event {
         case .time(_, let ms):
+            roonPositionMs = ms
             // Roon reached the start of the next track in the stream: now it shows it.
             while let first = marks.first, ms >= first.ms - 300 {
                 marks.removeFirst()
