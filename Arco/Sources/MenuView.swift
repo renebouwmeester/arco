@@ -47,12 +47,12 @@ struct MenuView: View {
         case .searching, .connecting:
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text("Looking for a Roon Core on your network.").font(.callout).foregroundStyle(.secondary)
+                Text("Looking for a Roon Core on your network").font(.callout).foregroundStyle(.secondary)
             }
-        case .waitingForAuthorization(let name):
+        case .waitingForAuthorization:
             VStack(alignment: .leading, spacing: 6) {
                 Text("Allow Arco in Roon").font(.callout.weight(.semibold))
-                Text("In Roon on any device, open Settings › Extensions and press Enable next to Arco. (\(name))")
+                Text("In Roon on any device, open Settings › Extensions and press Enable next to Arco")
                     .font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -60,7 +60,7 @@ struct MenuView: View {
             sending
             Divider()
             if model.zones.isEmpty {
-                Text("Roon has no zones right now.").font(.callout).foregroundStyle(.secondary)
+                Text("Roon has no zones right now").font(.callout).foregroundStyle(.secondary)
             } else {
                 Text("Play to").font(.caption).foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 2) {

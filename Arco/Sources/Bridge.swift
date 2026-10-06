@@ -184,7 +184,7 @@ final class Bridge: ObservableObject {
         phase = .off
     }
 
-    private static let microphoneHint = "Allow Arco to read its audio output: System Settings › Privacy & Security › Microphone."
+    private static let microphoneHint = "Allow Arco to read its audio output: System Settings › Privacy & Security › Microphone"
 
     private func fail(_ message: String) {
         Log.note("failed: \(message)")
@@ -211,7 +211,7 @@ final class Bridge: ObservableObject {
         // No sound within five seconds: say so instead of waiting for nothing.
         try? await Task.sleep(for: .seconds(5))
         if session === s, phase == .starting, store.status == nil {
-            fail("No sound reaches Arco. Is \(source.name) playing, to the output Arco?")
+            fail("No sound reaches Arco — is \(source.name) playing, to the output Arco?")
         }
     }
 
