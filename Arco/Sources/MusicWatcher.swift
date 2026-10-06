@@ -47,7 +47,8 @@ final class MusicWatcher {
         let state = State(rawValue: lines[0]) ?? .stopped
         guard state != .stopped, lines.count >= 6 else { update(state, nil); return }
         let seconds = Double(lines[4].replacingOccurrences(of: ",", with: ".")) ?? 0
-        update(state, Track(id: lines[5], title: lines[1], artist: lines[2], album: lines[3], durationMs: Int(seconds * 1000)))
+        update(state, Track(id: Self.identity(lines[1], lines[2], lines[3]), title: lines[1], artist: lines[2], album: lines[3],
+                            durationMs: Int(seconds * 1000)))
     }
 
     private func received(_ info: [AnyHashable: Any]) {
@@ -58,10 +59,16 @@ final class MusicWatcher {
         default: state = .stopped
         }
         guard state != .stopped, let title = info["Name"] as? String else { update(state, state == .stopped ? nil : track); return }
-        let id = (info["PersistentID"] as? NSNumber).map { String(format: "%016llX", $0.uint64Value) } ?? title
-        let new = Track(id: id, title: title, artist: info["Artist"] as? String ?? "", album: info["Album"] as? String ?? "",
+        let artist = info["Artist"] as? String ?? "", album = info["Album"] as? String ?? ""
+        let new = Track(id: Self.identity(title, artist, album), title: title, artist: artist, album: album,
                         durationMs: (info["Total Time"] as? NSNumber)?.intValue ?? 0)
         update(state, new)
+    }
+
+    /// One identity for a track, the same from AppleScript and from the notification (their persistent ids differ in
+    /// form, and a streamed track may come without one).
+    private static func identity(_ title: String, _ artist: String, _ album: String) -> String {
+        [title, artist, album].joined(separator: "\u{1F}")
     }
 
     private func update(_ state: State, _ track: Track?) {

@@ -69,6 +69,7 @@ final class Bridge: ObservableObject {
         }
     }
     private var coverNumber = 0
+    private var pendingPause: Task<Void, Never>?
     static var driverInstalled: Bool { AudioDevices.arco != nil }
 
     // MARK: - On and off
@@ -219,12 +220,22 @@ final class Bridge: ObservableObject {
                 marks.append((live.positionMs, makeInfo(track)))
             }
             if state != .playing, phase == .playing {
-                stream?.pauseWriting()
-                roonControl("pause")
-                phase = .paused
-            } else if state == .playing, phase == .paused {
-                roonControl("play")
-                phase = .playing
+                // Music pauses itself for a moment when its output changes (20:18:49: paused, playing again 0.14 s
+                // later). Only a pause that lasts is passed on.
+                pendingPause?.cancel()
+                pendingPause = Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .milliseconds(600))
+                    guard let self, !Task.isCancelled, self.music.state != .playing, self.phase == .playing else { return }
+                    self.stream?.pauseWriting()
+                    self.roonControl("pause")
+                    self.phase = .paused
+                }
+            } else if state == .playing {
+                pendingPause?.cancel(); pendingPause = nil
+                if phase == .paused {
+                    roonControl("play")
+                    phase = .playing
+                }
             }
         default:
             break
