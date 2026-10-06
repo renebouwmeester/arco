@@ -1,0 +1,23 @@
+# Does it still build? On every push and pull request — once the repository is public (macOS minutes cost on a private
+# one). Unsigned: signing, notarizing and publishing stay with release.sh on the maintainer's Mac.
+name: Build
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  build:
+    if: ${{ !github.event.repository.private }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen
+      - run: xcodegen generate
+      - name: App
+        run: >-
+          xcodebuild -project Arco.xcodeproj -scheme Arco -configuration Release -derivedDataPath build
+          CODE_SIGNING_ALLOWED=NO build
+      - name: Driver
+        run: >-
+          clang -Wall -Wextra -Wno-unused-parameter -O2 -arch arm64 -arch x86_64 -mmacosx-version-min=14.0 -bundle
+          -framework CoreFoundation -o /tmp/Arco Driver/ArcoDriver.c
