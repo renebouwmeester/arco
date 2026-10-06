@@ -12,7 +12,8 @@
 //
 // Off, quit, or the zone taken over in Roon: the session ends and the previous output comes back.
 //
-// Milestone 2: the Arco output runs at a fixed 44.1 kHz. A clock per track comes later.
+// The rate: with Lossless on, the Music app sets the Arco device to each track's own rate; Arco follows with a new
+// stream. Milestone 4 makes that seamless with a stream per track of known length.
 import AppKit
 import ArcoRoon
 import AVFoundation
@@ -46,7 +47,6 @@ final class Bridge: ObservableObject {
     /// Until when Roon's pause / play events are our own doing.
     private var ownUntil = Date.distantPast
     private static let previousOutputKey = "PreviousOutputUID"
-    private static let fixedRate = 44_100.0
     private let directory = FileManager.default.temporaryDirectory.appendingPathComponent("arco", isDirectory: true)
 
     init(connection: RoonConnection) {
@@ -115,11 +115,9 @@ final class Bridge: ObservableObject {
             UserDefaults.standard.set(uid, forKey: Self.previousOutputKey)
         }
         AudioDevices.setDefaultOutput(arco)
-        // The rate after the switch: macOS gives a device that becomes the default output its remembered format (Arco
-        // stayed at 48 kHz although 44.1 was asked before the switch — and Music resampled to it).
-        AudioDevices.setSampleRate(Self.fixedRate, of: arco)
-        for _ in 0..<20 where AudioDevices.sampleRate(of: arco) != Self.fixedRate { try? await Task.sleep(for: .milliseconds(50)) }
-        Log.note("device: Arco at \(Int(AudioDevices.sampleRate(of: arco) ?? 0)) Hz (asked \(Int(Self.fixedRate)))")
+        // No rate is forced: with Lossless on, the Music app sets the device to each track's own rate (6 Oct 2026: a
+        // 48 kHz master took Arco from 44.1 to 48 five seconds after it started playing). Arco follows (see below).
+        Log.note("device: Arco at \(Int(AudioDevices.sampleRate(of: arco) ?? 0)) Hz")
         if let error = capture.start(device: arco) { return fail(error) }
         Log.note("capture: reading the Arco input at \(Int(capture.rate)) Hz")
         // The Music app sets the device's rate itself when it (re)opens its output — 48 kHz three seconds after Arco set
@@ -221,6 +219,14 @@ final class Bridge: ObservableObject {
     private func roonEvent(_ event: AudioInputSession.Event) {
         let own = Date() < ownUntil
         if case .time = event {} else { Log.note("roon: \(event)\(own ? " (ours)" : "")") }
+        // Only the current stream counts: a stream replaced at a change of rate still reports its end or its error.
+        let current = String(streamNumber)
+        switch event {
+        case .time(let track, _), .playing(let track), .paused(let track), .unpaused(let track), .stopped(let track),
+             .ended(let track), .failed(let track, _):
+            if track != current { return }
+        default: break
+        }
         switch event {
         case .time(_, let ms):
             roonPositionMs = ms
@@ -264,11 +270,12 @@ final class Bridge: ObservableObject {
               let host = connection.coreHost, let address = Discovery.localAddress(toward: host) else { return }
         streamNumber += 1
         let live = LiveStream(number: streamNumber, rate: rate, directory: directory)
+        // The old stream stays open until Roon plays the new one: closing it under Roon's read was a MediaError that ended
+        // the session (20:36:28).
         let old = stream
         stream = live
         streamHolder.set(live)
         server.setStream(live)
-        old?.close()
         marks = []
         let number = streamNumber
         Task { @MainActor in
@@ -278,6 +285,7 @@ final class Bridge: ObservableObject {
             let answer = await s.play(track: String(number), url: "http://\(address):\(self.server.port)\(live.path)",
                                       info: self.makeInfo(self.music.track, address: address))
             Log.note("play (new rate \(Int(rate))): Roon answered \(answer)")
+            old?.close()
         }
     }
 
