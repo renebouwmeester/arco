@@ -296,7 +296,9 @@ final class Bridge: ObservableObject {
             guard current(track) else { return }
             if phase == .playing, !own { ownUntil = Date().addingTimeInterval(3); music.pause() }
         case .failed(let track, let reason):
-            guard Int(track) == roonSlice, phase != .starting else { return }
+            // Only an error of the slice being written counts: a slice dropped at a skip answers a 404 to Roon's last
+            // fetches, and Roon may report that as a MediaError before the new slice's play arrives.
+            guard Int(track) == roonSlice, Int(track) == store?.status?.number, phase != .starting else { return }
             fail("Roon: \(reason)")
         case .cleared:
             // A slice replaced by a new play (a skip, a cut at a change of rate): Roon confirms it took it out.
