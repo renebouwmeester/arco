@@ -17,9 +17,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>0.1.1</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>2</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSUIElement</key>
@@ -32,5 +32,9 @@
 	<string>Arco finds your Roon Core on the local network and streams your music to it.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Arco reads the Arco audio output's loopback — the music the Music app plays to it. It never listens to a microphone.</string>
+	<key>SUFeedURL</key>
+	<string>https://github.com/renebouwmeester/arco/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>m6TCPwC6m7TDfRhfn2h2eIHsixrBoKT1RL/Cm6IRvXU=</string>
 </dict>
 </plist>
