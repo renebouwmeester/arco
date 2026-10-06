@@ -75,7 +75,9 @@ echo "driver: $(lipo -archs "$DRV/Contents/MacOS/Arco")"
 
 # The package: the app stays in /Applications (not "relocated" to another copy the installer happens to find).
 pkgbuild --analyze --root "$ROOT" "$OUT/components.plist" > /dev/null
-N=$(plutil -p "$OUT/components.plist" | grep -c "RootRelativeBundlePath")
+# Top-level components only (Sparkle's helpers appear nested, as ChildBundles, with the same key).
+N=0
+while /usr/libexec/PlistBuddy -c "Print :$N:RootRelativeBundlePath" "$OUT/components.plist" > /dev/null 2>&1; do N=$((N + 1)); done
 for ((i = 0; i < N; i++)); do
   /usr/libexec/PlistBuddy -c "Delete :$i:BundleIsRelocatable" "$OUT/components.plist" 2>/dev/null || true
   /usr/libexec/PlistBuddy -c "Add :$i:BundleIsRelocatable bool false" "$OUT/components.plist"
