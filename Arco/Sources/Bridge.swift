@@ -216,7 +216,8 @@ final class Bridge: ObservableObject {
         guard let s = session, let address else { return }
         let url = "http://\(address):\(server.port)\(slice.path)"
         Task { @MainActor in
-            if let follows = slice.follows {
+            // Follows a run Roon never got (cut 0.2 s into a start, when the rate changed at once): nothing to wait for.
+            if let follows = slice.follows, self.roonSlice == follows.number {
                 // Wait until Roon is a quarter of a second before the point of the change (at most the time it still has
                 // to play there, plus some slack).
                 let deadline = Date().addingTimeInterval(Double(max(0, follows.atMs - self.roonPositionNow())) / 1000 + 15)
