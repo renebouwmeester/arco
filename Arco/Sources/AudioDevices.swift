@@ -82,6 +82,23 @@ enum AudioDevices {
         return rate
     }
 
+    /// Calls `change` (on the main queue) whenever the device's nominal sample rate changes. Returns a token to stop.
+    static func watchSampleRate(of device: AudioDeviceID, _ change: @escaping (Double) -> Void) -> AudioObjectPropertyListenerBlock {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyNominalSampleRate,
+                                                 mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        let block: AudioObjectPropertyListenerBlock = { _, _ in
+            if let rate = sampleRate(of: device) { change(rate) }
+        }
+        AudioObjectAddPropertyListenerBlock(device, &address, DispatchQueue.main, block)
+        return block
+    }
+
+    static func stopWatchingSampleRate(of device: AudioDeviceID, _ block: @escaping AudioObjectPropertyListenerBlock) {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyNominalSampleRate,
+                                                 mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        AudioObjectRemovePropertyListenerBlock(device, &address, DispatchQueue.main, block)
+    }
+
     @discardableResult
     static func setSampleRate(_ rate: Double, of device: AudioDeviceID) -> Bool {
         var value = Float64(rate)

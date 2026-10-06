@@ -16,7 +16,8 @@ final class Capture: @unchecked Sendable {
     /// Called on the capture queue with 24-bit stereo PCM, its frame count, and the first frame that is not silent (nil
     /// for a silent buffer) — where the music resumes after a pause.
     var onAudio: ((Data, Int, Int?) -> Void)?
-    private(set) var rate: Double = 0
+    /// The device's sample rate; the bridge sets it again when the device changes rate.
+    var rate: Double = 0
 
     private var device: AudioDeviceID = 0
     private var procID: AudioDeviceIOProcID?

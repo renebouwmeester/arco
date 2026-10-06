@@ -82,6 +82,8 @@ final class Bridge: ObservableObject {
     private var pendingPause: Task<Void, Never>?
     private var termSource: DispatchSourceSignal?
     private var roonPositionMs = 0
+    private var rateWatch: AudioObjectPropertyListenerBlock?
+    private var arcoDevice: AudioDeviceID?
     private var heartbeat: Timer?
     static var driverInstalled: Bool { AudioDevices.arco != nil }
 
@@ -120,6 +122,13 @@ final class Bridge: ObservableObject {
         Log.note("device: Arco at \(Int(AudioDevices.sampleRate(of: arco) ?? 0)) Hz (asked \(Int(Self.fixedRate)))")
         if let error = capture.start(device: arco) { return fail(error) }
         Log.note("capture: reading the Arco input at \(Int(capture.rate)) Hz")
+        // The Music app sets the device's rate itself when it (re)opens its output — 48 kHz three seconds after Arco set
+        // 44.1 (6 Oct 2026, 20:34:02; most likely its Dolby Atmos rendering). Arco follows instead of fighting: a new
+        // rate is a new stream at that rate. (Until then the stream was labelled 44.1 and carried 48: 9% slow in Roon.)
+        rateWatch = AudioDevices.watchSampleRate(of: arco) { [weak self] rate in
+            MainActor.assumeIsolated { self?.deviceRateChanged(rate) }
+        }
+        arcoDevice = arco
         phase = .waitingForMusic
         connection.setStatus("Playing to \(zone.name)")
         // Music starts again on Arco; its "playing" begins the session.
@@ -127,6 +136,8 @@ final class Bridge: ObservableObject {
     }
 
     func turnOff() {
+        if let rateWatch, let arcoDevice { AudioDevices.stopWatchingSampleRate(of: arcoDevice, rateWatch) }
+        rateWatch = nil
         heartbeat?.invalidate(); heartbeat = nil
         roonPositionMs = 0
         session?.end()
@@ -240,6 +251,33 @@ final class Bridge: ObservableObject {
             turnOff()
         case .playing:
             break
+        }
+    }
+
+    /// The device changed rate: the stream so far ends, a new one at the new rate goes into Roon's play slot. Roon plays
+    /// a few seconds behind, so those seconds of the old stream are lost — a short gap, never a wrong speed.
+    private func deviceRateChanged(_ rate: Double) {
+        guard rate != capture.rate else { return }
+        Log.note("device: Arco changed to \(Int(rate)) Hz (was \(Int(capture.rate)))")
+        capture.rate = rate
+        guard let s = session, phase == .playing || phase == .paused || phase == .starting,
+              let host = connection.coreHost, let address = Discovery.localAddress(toward: host) else { return }
+        streamNumber += 1
+        let live = LiveStream(number: streamNumber, rate: rate, directory: directory)
+        let old = stream
+        stream = live
+        streamHolder.set(live)
+        server.setStream(live)
+        old?.close()
+        marks = []
+        let number = streamNumber
+        Task { @MainActor in
+            for _ in 0..<50 where live.positionMs < 500 { try? await Task.sleep(for: .milliseconds(100)) }
+            guard self.session === s, self.stream === live else { return }
+            self.ownUntil = Date().addingTimeInterval(3)
+            let answer = await s.play(track: String(number), url: "http://\(address):\(self.server.port)\(live.path)",
+                                      info: self.makeInfo(self.music.track, address: address))
+            Log.note("play (new rate \(Int(rate))): Roon answered \(answer)")
         }
     }
 
