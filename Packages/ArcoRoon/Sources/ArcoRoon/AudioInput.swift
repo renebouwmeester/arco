@@ -19,6 +19,8 @@ public final class AudioInputSession {
         case stopped(track: String)
         case ended(track: String)
         case failed(track: String, reason: String)
+        /// The track left the play slot because another one replaced it — expected after a new play, not an error.
+        case cleared(track: String)
         case control(String)        // "next", "previous" …
         case sessionEnded
     }
@@ -91,7 +93,8 @@ public final class AudioInputSession {
                 case "Unpaused": self.onEvent?(.unpaused(track: track))
                 case "StoppedUser": self.onEvent?(.stopped(track: track))
                 case "EndedNaturally": self.onEvent?(.ended(track: track))
-                case "MediaError", "ZoneLost", "ZoneNotFound", "Cleared", "NoConnection":
+                case "Cleared": self.onEvent?(.cleared(track: track))
+                case "MediaError", "ZoneLost", "ZoneNotFound", "NoConnection":
                     self.onEvent?(.failed(track: track, reason: name))
                 default: break
                 }

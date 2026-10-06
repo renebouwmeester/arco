@@ -289,6 +289,9 @@ final class Bridge: ObservableObject {
         case .failed(let track, let reason):
             guard Int(track) == roonSlice, phase != .starting else { return }
             fail("Roon: \(reason)")
+        case .cleared:
+            // A slice replaced by a new play (a skip, a cut at a change of rate): Roon confirms it took it out.
+            break
         case .control(let control):
             if control.contains("next") { music.next() } else if control.contains("prev") { music.previous() }
         case .sessionEnded:
