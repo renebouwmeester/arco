@@ -1,0 +1,10 @@
+#!/bin/bash
+# Arco installer, after: restart Core Audio so the Arco output appears (the Mac's sound is gone for a moment), then open
+# Arco for the person who installed it.
+killall coreaudiod 2>/dev/null || true
+sleep 2
+user_id=$(stat -f %u /dev/console)
+if [ -n "$user_id" ] && [ "$user_id" != "0" ]; then
+  launchctl asuser "$user_id" /usr/bin/open -a /Applications/Arco.app || true
+fi
+exit 0

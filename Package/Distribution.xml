@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>Arco</title>
+    <welcome file="welcome.html" mime-type="text/html"/>
+    <license file="LICENSE.txt"/>
+    <options customize="never" require-scripts="true" hostArchitectures="arm64,x86_64"/>
+    <domains enable_localSystem="true"/>
+    <volume-check>
+        <allowed-os-versions><os-version min="14.0"/></allowed-os-versions>
+    </volume-check>
+    <choices-outline><line choice="default"><line choice="arco"/></line></choices-outline>
+    <choice id="default"/>
+    <choice id="arco" visible="false"><pkg-ref id="nl.renebouwmeester.arco.pkg"/></choice>
+    <pkg-ref id="nl.renebouwmeester.arco.pkg" version="0" onConclusion="none">arco.pkg</pkg-ref>
+</installer-gui-script>

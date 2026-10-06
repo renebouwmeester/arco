@@ -1,0 +1,5 @@
+#!/bin/bash
+# Arco installer, before: quit a running Arco (it gives the Mac its own output back on the way out).
+pkill -TERM -x Arco 2>/dev/null || true
+sleep 1
+exit 0
