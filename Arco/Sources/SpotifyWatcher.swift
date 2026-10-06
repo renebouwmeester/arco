@@ -1,34 +1,34 @@
-// The Music app, from the outside: what plays (its distributed notification, com.apple.Music.playerInfo, arrives at every
-// change), the cover of the current track, and the buttons Roon passes on (play, pause, next, previous) — by AppleScript.
-// Arco never launches Music by itself: when it is not running, there is nothing to watch.
+// Spotify, from the outside: its distributed notification (com.spotify.client.PlaybackStateChanged) at every change, its
+// AppleScript for the rest. Its cover comes as a URL (artwork url), which Roon fetches itself — no key, nothing to serve.
+// Spotify doesn't set the output's rate; it plays at 44.1 kHz, so that is what the Arco device gets when Spotify plays.
+// Arco never launches Spotify by itself.
 import AppKit
 import Foundation
 
 @MainActor
-final class MusicWatcher: PlayerSource {
-    let name = "Music"
+final class SpotifyWatcher: PlayerSource {
+    let name = "Spotify"
     private(set) var state: SourceState = .stopped
     private(set) var track: SourceTrack?
     var onChange: ((SourceState, SourceTrack?, Bool) -> Void)?
-    /// With Lossless on, Music sets the device to each track's own rate itself.
-    let preferredRate: Double? = nil
+    let preferredRate: Double? = 44_100
     private var observer: NSObjectProtocol?
 
     init() {
         observer = DistributedNotificationCenter.default().addObserver(
-            forName: Notification.Name("com.apple.Music.playerInfo"), object: nil, queue: .main) { [weak self] note in
+            forName: Notification.Name("com.spotify.client.PlaybackStateChanged"), object: nil, queue: .main) { [weak self] note in
             let info = note.userInfo ?? [:]
             MainActor.assumeIsolated { self?.received(info) }
         }
     }
 
     static var isRunning: Bool {
-        NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.apple.Music" }
+        NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.spotify.client" }
     }
 
     func refresh() {
         guard Self.isRunning, let reply = AppleScript.run("""
-            tell application "Music"
+            tell application "Spotify"
                 set s to player state as string
                 if s is "stopped" then return s
                 set t to current track
@@ -38,9 +38,8 @@ final class MusicWatcher: PlayerSource {
         let lines = reply.components(separatedBy: "\n")
         let state = SourceState(rawValue: lines[0]) ?? .stopped
         guard state != .stopped, lines.count >= 5 else { update(state, nil); return }
-        let seconds = Double(lines[4].replacingOccurrences(of: ",", with: ".")) ?? 0
         update(state, SourceTrack(id: SourceTrack.identity(lines[1], lines[2], lines[3]), title: lines[1], artist: lines[2],
-                                  album: lines[3], durationMs: Int(seconds * 1000)))
+                                  album: lines[3], durationMs: Int(lines[4]) ?? 0))
     }
 
     private func received(_ info: [AnyHashable: Any]) {
@@ -53,7 +52,7 @@ final class MusicWatcher: PlayerSource {
         guard state != .stopped, let title = info["Name"] as? String else { update(state, state == .stopped ? nil : track); return }
         let artist = info["Artist"] as? String ?? "", album = info["Album"] as? String ?? ""
         update(state, SourceTrack(id: SourceTrack.identity(title, artist, album), title: title, artist: artist, album: album,
-                                  durationMs: (info["Total Time"] as? NSNumber)?.intValue ?? 0))
+                                  durationMs: (info["Duration"] as? NSNumber)?.intValue ?? 0))
     }
 
     private func update(_ state: SourceState, _ track: SourceTrack?) {
@@ -65,20 +64,18 @@ final class MusicWatcher: PlayerSource {
     }
 
     func position() -> Double {
-        guard Self.isRunning, let text = AppleScript.run(#"tell application "Music" to get player position"#)?.stringValue else { return 0 }
+        guard Self.isRunning, let text = AppleScript.run(#"tell application "Spotify" to get player position"#)?.stringValue else { return 0 }
         return Double(text.replacingOccurrences(of: ",", with: ".")) ?? 0
     }
 
-    /// The cover of the current track, as the Music app has it (JPEG or PNG) — Arco serves it to Roon.
     func cover() -> SourceCover? {
-        guard Self.isRunning, let reply = AppleScript.run(#"tell application "Music" to get raw data of artwork 1 of current track"#) else { return nil }
-        let data = reply.data
-        guard data.count > 8 else { return nil }
-        return .data(data, type: data.starts(with: [0x89, 0x50, 0x4E, 0x47]) ? "image/png" : "image/jpeg")
+        guard Self.isRunning, let url = AppleScript.run(#"tell application "Spotify" to get artwork url of current track"#)?.stringValue,
+              url.hasPrefix("http") else { return nil }
+        return .url(url)
     }
 
-    func play() { AppleScript.run(#"tell application "Music" to play"#) }
-    func pause() { AppleScript.run(#"tell application "Music" to pause"#) }
-    func next() { AppleScript.run(#"tell application "Music" to next track"#) }
-    func previous() { AppleScript.run(#"tell application "Music" to previous track"#) }
+    func play() { AppleScript.run(#"tell application "Spotify" to play"#) }
+    func pause() { AppleScript.run(#"tell application "Spotify" to pause"#) }
+    func next() { AppleScript.run(#"tell application "Spotify" to next track"#) }
+    func previous() { AppleScript.run(#"tell application "Spotify" to previous track"#) }
 }

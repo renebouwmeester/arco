@@ -40,6 +40,10 @@ final class Bridge: ObservableObject {
     private let server = StreamServer()
     private let capture = Capture()
     private let music = MusicWatcher()
+    private let spotify = SpotifyWatcher()
+    /// The source Arco follows: the app that plays (one voice — when the other one starts, it becomes the source and the
+    /// first one is paused).
+    private var source: PlayerSource
     private var session: AudioInputSession?
     private var store: SliceStore?
     private var zoneID: String?
@@ -64,8 +68,14 @@ final class Bridge: ObservableObject {
 
     init(connection: RoonConnection) {
         self.connection = connection
+        source = music
         try? FileManager.default.removeItem(at: directory)   // leftovers of an earlier run
-        music.onChange = { [weak self] state, track, changed in self?.musicChanged(state, track, changed) }
+        for s in [music, spotify] as [PlayerSource] {
+            s.onChange = { [weak self, weak s] state, track, changed in
+                guard let self, let s else { return }
+                self.sourceChanged(s, state, track, changed)
+            }
+        }
         let holder = storeHolder, capture = capture
         capture.onAudio = { pcm, frames, firstSound in holder.write(pcm, frames, firstSound, rate: capture.rate) }
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
@@ -116,17 +126,21 @@ final class Bridge: ObservableObject {
         }
         self.address = address
         zoneID = zone.id
+        // The source: the app that plays now (Music when neither does).
+        music.refresh(); spotify.refresh()
+        source = spotify.state == .playing && music.state != .playing ? spotify : music
+        if source !== spotify, spotify.state == .playing { spotify.pause() }
         // Basso's lesson for a change of output or clock: pause, change, resume. Switching the output under a playing
         // Music app makes it stumble (20:27:58: paused and on again 42 ms later — a hiccup in the music itself).
-        music.refresh()
-        let wasPlaying = music.state == .playing
-        if wasPlaying { music.pause(); try? await Task.sleep(for: .milliseconds(300)) }
+        let wasPlaying = source.state == .playing
+        if wasPlaying { source.pause(); try? await Task.sleep(for: .milliseconds(300)) }
         if let current = AudioDevices.defaultOutput, current != arco, let uid = AudioDevices.uid(of: current) {
             UserDefaults.standard.set(uid, forKey: Self.previousOutputKey)
         }
         AudioDevices.setDefaultOutput(arco)
-        // No rate is forced: with Lossless on, the Music app sets the device to each track's own rate.
-        Log.note("device: Arco at \(Int(AudioDevices.sampleRate(of: arco) ?? 0)) Hz")
+        // The rate: the Music app sets the device to each track's own rate itself (with Lossless on); Spotify plays 44.1.
+        if let rate = source.preferredRate { AudioDevices.setSampleRate(rate, of: arco) }
+        Log.note("device: Arco at \(Int(AudioDevices.sampleRate(of: arco) ?? 0)) Hz; source \(source.name)")
         let s = SliceStore(directory: directory)
         s.onSliceStarted = { [weak self] slice in self?.sliceStarted(slice) }
         store = s
@@ -140,8 +154,8 @@ final class Bridge: ObservableObject {
         arcoDevice = arco
         phase = .waitingForMusic
         connection.setStatus("Playing to \(zone.name)")
-        // Music starts again on Arco; its "playing" begins the session.
-        if wasPlaying { music.play() }
+        // The source starts again on Arco; its "playing" begins the session.
+        if wasPlaying { source.play() }
     }
 
     func turnOff() {
@@ -185,14 +199,14 @@ final class Bridge: ObservableObject {
         }
         session = s
         Log.note("session: began on the zone; slices at http://\(address):\(server.port)")
-        // The first slice: the current track, from where Music is now.
-        guard let track = music.track else { return }
-        let left = max(1000, track.durationMs - Int(music.position() * 1000))
+        // The first run: the current track, from where the source is now.
+        guard let track = source.track else { return }
+        let left = max(1000, track.durationMs - Int(source.position() * 1000))
         store.startTrack(.init(info: makeInfo(track), durationMs: left), newRun: true)
         // No sound within five seconds: say so instead of waiting for nothing.
         try? await Task.sleep(for: .seconds(5))
         if session === s, phase == .starting, store.status == nil {
-            fail("No sound reaches Arco. Is the Music app playing, to the output Arco?")
+            fail("No sound reaches Arco. Is \(source.name) playing, to the output Arco?")
         }
     }
 
@@ -258,14 +272,22 @@ final class Bridge: ObservableObject {
         }
     }
 
-    private func makeInfo(_ track: MusicWatcher.Track) -> JSON {
+    private func makeInfo(_ track: SourceTrack) -> JSON {
         var imageURL: String?
-        if let cover = music.artwork(), let address {
-            // Unique per run, like the slices: Roon caches images by URL, and "c1" of the last run showed the wrong cover.
-            coverNumber += 1
-            let key = "\(Self.coverRun)-\(coverNumber).\(cover.type == "image/png" ? "png" : "jpg")"
-            server.addCover(cover.data, type: cover.type, key: key)
-            imageURL = "http://\(address):\(server.port)/cover/\(key)"
+        switch source.cover() {
+        case .data(let data, let type)?:
+            // Served by Arco, under an address unique per run: Roon caches images by URL ("c1" of a last run showed the
+            // wrong cover).
+            if let address {
+                coverNumber += 1
+                let key = "\(Self.coverRun)-\(coverNumber).\(type == "image/png" ? "png" : "jpg")"
+                server.addCover(data, type: type, key: key)
+                imageURL = "http://\(address):\(server.port)/cover/\(key)"
+            }
+        case .url(let url)?:
+            imageURL = url          // Spotify's own image address: Roon fetches it itself
+        case nil:
+            break
         }
         return AudioInputSession.info(title: track.title, artist: track.artist, album: track.album, imageURL: imageURL)
     }
@@ -294,16 +316,16 @@ final class Bridge: ObservableObject {
             break
         case .paused(let track):
             guard current(track) else { return }
-            if !own { ownUntil = Date().addingTimeInterval(3); music.pause() }
+            if !own { ownUntil = Date().addingTimeInterval(3); source.pause() }
             phase = .paused
         case .unpaused(let track):
             guard current(track) else { return }
-            if !own { ownUntil = Date().addingTimeInterval(3); music.play() }
+            if !own { ownUntil = Date().addingTimeInterval(3); source.play() }
             phase = .playing
         case .stopped(let track):
             // Roon stops a zone five seconds into a pause; a stop while playing is the user's.
             guard current(track) else { return }
-            if phase == .playing, !own { ownUntil = Date().addingTimeInterval(3); music.pause() }
+            if phase == .playing, !own { ownUntil = Date().addingTimeInterval(3); source.pause() }
         case .failed(let track, let reason):
             // Only an error of the slice being written counts: a slice dropped at a skip answers a 404 to Roon's last
             // fetches, and Roon may report that as a MediaError before the new slice's play arrives.
@@ -313,7 +335,7 @@ final class Bridge: ObservableObject {
             // A slice replaced by a new play (a skip, a cut at a change of rate): Roon confirms it took it out.
             break
         case .control(let control):
-            if control.contains("next") { music.next() } else if control.contains("prev") { music.previous() }
+            if control.contains("next") { source.next() } else if control.contains("prev") { source.previous() }
         case .sessionEnded:
             // Someone played something else on the zone: give the Mac its output back.
             turnOff()
@@ -329,10 +351,17 @@ final class Bridge: ObservableObject {
         rateChangedAt = Date()
     }
 
-    // MARK: - The Music app
+    // MARK: - The sources (Music, Spotify)
 
-    private func musicChanged(_ state: MusicWatcher.State, _ track: MusicWatcher.Track?, _ changed: Bool) {
-        Log.note("music: \(state.rawValue)\(changed ? " — \(track?.title ?? "-")" : "")")
+    private func sourceChanged(_ s: PlayerSource, _ state: SourceState, _ track: SourceTrack?, _ changed: Bool) {
+        Log.note("\(s.name.lowercased()): \(state.rawValue)\(changed ? " — \(track?.title ?? "-")" : "")\(s === source ? "" : " (not the source)")")
+        if s !== source {
+            // The other app starts playing: it becomes the source (one voice), the first one pauses, and a new run begins
+            // at once — like a skip. Its pausing and stopping otherwise don't matter.
+            guard state == .playing, phase != .off else { return }
+            switchSource(to: s)
+            return
+        }
         switch phase {
         case .waitingForMusic:
             if state == .playing { Task { await startSession() } }
@@ -363,7 +392,7 @@ final class Bridge: ObservableObject {
                 pendingPause?.cancel()
                 pendingPause = Task { @MainActor [weak self] in
                     try? await Task.sleep(for: .milliseconds(200))
-                    guard let self, !Task.isCancelled, self.music.state != .playing, self.phase == .playing else { return }
+                    guard let self, !Task.isCancelled, self.source.state != .playing, self.phase == .playing else { return }
                     if Date().timeIntervalSince(self.rateChangedAt) < 2 {
                         Log.note("pause: Music changes the clock — Roon plays on")
                         return
@@ -403,6 +432,27 @@ final class Bridge: ObservableObject {
             let roonAt = roonSlice == status.number ? roonPositionMs : 0
             if status.writtenMs - roonAt >= Self.supplyMs - 300 { return }
             try? await Task.sleep(for: .milliseconds(50))
+        }
+    }
+
+    /// Another app plays: it becomes the source. The first one pauses (Arco's own doing), the device gets the new source's
+    /// rate, and its track begins a new run at once.
+    private func switchSource(to s: PlayerSource) {
+        let old = source
+        source = s
+        Log.note("source: \(old.name) → \(s.name)")
+        if old.state == .playing { ownUntil = Date().addingTimeInterval(3); old.pause() }
+        if let rate = s.preferredRate, let arco = arcoDevice, AudioDevices.sampleRate(of: arco) != rate {
+            AudioDevices.setSampleRate(rate, of: arco)
+        }
+        switch phase {
+        case .waitingForMusic:
+            Task { await startSession() }
+        case .playing, .paused, .starting:
+            if let track = s.track { store?.startTrack(.init(info: makeInfo(track), durationMs: track.durationMs), newRun: true) }
+            if phase == .paused { roonControl("play"); phase = .playing }
+        default:
+            break
         }
     }
 

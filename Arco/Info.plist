@@ -25,7 +25,7 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>Arco reads what the Music app plays (title, artist, album, cover) and passes Roon's play, pause and skip buttons on to it.</string>
+	<string>Arco reads what the Music app and Spotify play (title, artist, album, cover) and passes Roon's play, pause and skip buttons on to them.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 René Bouwmeester · Apache License 2.0</string>
 	<key>NSLocalNetworkUsageDescription</key>
