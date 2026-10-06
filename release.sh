@@ -11,13 +11,9 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# Run it from Terminal. A process started from an app outside macOS itself (an editor, an assistant) tags everything it
-# writes with com.apple.provenance, which can't be removed, and pkgbuild packs it into the payload as ._ files.
-probe=$(mktemp)
-if xattr -p com.apple.provenance "$probe" > /dev/null 2>&1; then
-  echo "!! files written here carry com.apple.provenance (ends up as ._ files in the payload) — run this from Terminal"
-fi
-rm -f "$probe"
+# About the ._ files in the payload: everything written on this Mac carries com.apple.provenance (it can't be removed),
+# and pkgbuild packs extended attributes as AppleDouble files. The installer merges them back into attributes — the
+# installed app and driver have no ._ files and pass codesign --verify --strict (0.1.0, 6 Oct 2026).
 
 # A release is built with the released Xcode, not whatever xcode-select points to (often a beta).
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
