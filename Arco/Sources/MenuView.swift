@@ -126,7 +126,9 @@ private struct VolumeRow: View {
                     Button { model.stepVolume(zone, up: true) } label: { Image(systemName: "plus") }
                     Spacer()
                 } else {
-                    Slider(value: $value, in: volume.min...max(volume.max, volume.min + 1), step: volume.step) { editing in
+                    // No `step:` — on macOS that draws a row of tick marks under the slider, which at 0–100 reads as a
+                    // stray line. The value is rounded to Roon's step when it is sent.
+                    Slider(value: $value, in: volume.min...max(volume.max, volume.min + 1)) { editing in
                         dragging = editing
                     }
                     .controlSize(.small)
@@ -137,18 +139,22 @@ private struct VolumeRow: View {
             .onAppear { value = volume.value }
             .onChange(of: volume.value) { _, new in if !dragging { value = new } }
             .onChange(of: value) { _, new in
-                guard new != volume.value else { return }
+                let step = volume.step > 0 ? volume.step : 1
+                let rounded = (new / step).rounded() * step
+                guard rounded != volume.value else { return }
                 // Not a request per pixel while dragging: the last value after a short pause.
                 pending?.cancel()
                 pending = Task { @MainActor in
                     try? await Task.sleep(for: .milliseconds(80))
-                    if !Task.isCancelled { model.setVolume(zone, to: new) }
+                    if !Task.isCancelled { model.setVolume(zone, to: rounded) }
                 }
             }
         }
     }
 
     private func label(_ volume: RoonZone.Volume) -> String {
-        volume.type == "db" ? String(format: "%.0f dB", value) : String(format: "%.0f", value)
+        let step = volume.step > 0 ? volume.step : 1
+        let shown = (value / step).rounded() * step
+        return volume.type == "db" ? String(format: "%.0f dB", shown) : String(format: "%.0f", shown)
     }
 }
