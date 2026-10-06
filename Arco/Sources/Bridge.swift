@@ -39,6 +39,8 @@ final class Bridge: ObservableObject {
     @Published private(set) var phase: Phase = .off
     private var attempt = 0
     @Published private(set) var zoneName: String?
+    /// The rate of the Arco device while sending: what Music set for this track (with Lossless on), 44.1 kHz for Spotify.
+    @Published private(set) var rate: Double?
     /// What Roon plays from Arco now — set when Roon starts a run or reaches the next track in it. The menu shows this for
     /// Arco's zone: Roon's own "now playing" of an audio-input session lags behind (Apple's title stayed long after
     /// Spotify had taken over).
@@ -167,6 +169,7 @@ final class Bridge: ObservableObject {
         server.setStore(s)
         if let error = capture.start(device: arco) { return fail(error) }
         Log.note("capture: reading the Arco input at \(Int(capture.rate)) Hz")
+        rate = capture.rate
         rateWatch = AudioDevices.watchSampleRate(of: arco) { [weak self] rate in
             MainActor.assumeIsolated { self?.deviceRateChanged(rate) }
         }
@@ -196,6 +199,7 @@ final class Bridge: ObservableObject {
         zoneID = nil
         restoreOutput()
         nowPlaying = nil
+        rate = nil
         if phase != .off { connection.setStatus("Ready") }
         phase = .off
     }
@@ -372,6 +376,7 @@ final class Bridge: ObservableObject {
         guard rate != capture.rate else { return }
         Log.note("device: Arco changed to \(Int(rate)) Hz (was \(Int(capture.rate)))")
         capture.rate = rate
+        self.rate = rate
         rateChangedAt = Date()
     }
 

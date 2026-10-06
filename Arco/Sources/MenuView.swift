@@ -109,6 +109,13 @@ extension MenuView {
         }
     }
 
+    /// " · 96 kHz", " · 44.1 kHz" — the rate Roon receives, changing with the track.
+    private var rateSuffix: String {
+        guard let rate = bridge.rate, rate > 0 else { return "" }
+        let khz = rate / 1000
+        return " · " + (khz.rounded() == khz ? String(format: "%.0f", khz) : String(format: "%.1f", khz)) + " kHz"
+    }
+
     private var isFailure: Bool { if case .failed = bridge.phase { return true }; return false }
 
     private var sendingLine: String {
@@ -119,8 +126,8 @@ extension MenuView {
         case .switchingOn: return "Switching to \(zone)…"
         case .waitingForMusic: return "Ready — press play in Music or Spotify to start on \(zone)"
         case .starting: return "Starting on \(zone)…"
-        case .playing: return "Playing on \(zone)"
-        case .paused: return "Paused on \(zone)"
+        case .playing: return "Playing on \(zone)" + rateSuffix
+        case .paused: return "Paused on \(zone)" + rateSuffix
         case .failed(let message): return message
         }
     }
