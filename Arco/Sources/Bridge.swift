@@ -207,9 +207,16 @@ final class Bridge: ObservableObject {
                 // A little of the music first, so Roon's first read finds something.
                 for _ in 0..<30 where (self.store?.status?.writtenMs ?? 0) < 500 { try? await Task.sleep(for: .milliseconds(100)) }
                 guard self.session === s else { return }
+                // Replaced in the meantime (a change of rate right after a skip): the newer slice goes to Roon, not this one.
+                guard self.store?.isCurrent(slice) == true else { Log.note("slice \(slice.number) superseded before it reached Roon"); return }
                 self.ownUntil = Date().addingTimeInterval(3)
-                let answer = await s.play(track: String(slice.number), url: url, info: slice.info)
+                var answer = await s.play(track: String(slice.number), url: url, info: slice.info)
                 Log.note("play slice \(slice.number): Roon answered \(answer)")
+                if answer == "Timeout", self.session === s, self.store?.isCurrent(slice) == true {
+                    let fresh = url + "?n=\(Int(Date().timeIntervalSince1970 * 1000))"
+                    answer = await s.play(track: String(slice.number), url: fresh, info: slice.info)
+                    Log.note("play slice \(slice.number) again: Roon answered \(answer)")
+                }
                 guard self.session === s else { return }
                 if answer == "Playing" || answer == "Unpaused" {
                     self.roonSlice = slice.number

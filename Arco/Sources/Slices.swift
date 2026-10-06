@@ -88,8 +88,7 @@ final class SliceStore: @unchecked Sendable {
     func announce(_ a: Announcement) {
         lock.lock(); defer { lock.unlock() }
         if a.immediate, let c = current {
-            c.closed = true
-            for r in c.readers { pump(c, r) }
+            drop(c)
             current = nil
             overflow = Data()            // whatever came after the skip point belongs to the new track
         }
@@ -149,6 +148,7 @@ final class SliceStore: @unchecked Sendable {
         case .waitForSound:
             guard let first = firstSound else { return }
             gate = .writing
+            Log.note("slices: sound — writing")
             data = pcm.subdata(in: (first * Self.bytesPerFrame)..<pcm.count)
             count = frames - first
         }
@@ -163,11 +163,10 @@ final class SliceStore: @unchecked Sendable {
                     if remaining < 2 || pending != nil {
                         pad(c)
                     } else {
-                        c.closed = true
+                        drop(c)
                         current = nil
                         pending = Announcement(info: c.info, durationMs: Int(remaining * 1000), immediate: true)
                         Log.note("slices: \(c.number) cut at a change of rate, \(Int(remaining)) s go on in the next")
-                        for r in c.readers { pump(c, r) }
                     }
                     continue
                 }
@@ -210,6 +209,22 @@ final class SliceStore: @unchecked Sendable {
         let callback = onSliceStarted
         DispatchQueue.main.async { callback?(s) }
     }
+
+    /// Under the lock: a slice cut off before its end (a skip, a cut at a change of rate) is gone at once — its readers
+    /// closed, the next request a 404. Left open, its readers waited for bytes that never came, and Roon's downloader for
+    /// it held the zone's bandwidth: the next slice never started (6 Oct 2026, 21:02:33).
+    private func drop(_ s: Slice) {
+        s.closed = true
+        for r in s.readers { r.connection.cancel() }
+        s.readers = []
+        try? s.writer?.close(); try? s.reader?.close()
+        try? FileManager.default.removeItem(at: s.file)
+        slices[s.number] = nil
+        Log.note("slices: \(s.number) dropped (cut off before its end)")
+    }
+
+    /// Whether a slice is still the one being written (a superseded one must not go to Roon any more).
+    func isCurrent(_ s: Slice) -> Bool { lock.lock(); defer { lock.unlock() }; return current === s }
 
     private func pad(_ s: Slice) {
         let rest = s.frames - s.written
