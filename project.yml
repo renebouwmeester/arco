@@ -1,0 +1,39 @@
+# Arco — generate the Xcode project with `xcodegen generate` (./build.sh does this).
+name: Arco
+options:
+  bundleIdPrefix: nl.renebouwmeester
+  deploymentTarget:
+    macOS: "14.0"
+
+packages:
+  ArcoRoon:
+    path: Packages/ArcoRoon
+
+targets:
+  Arco:
+    type: application
+    platform: macOS
+    sources:
+      - path: Arco/Sources
+    dependencies:
+      - package: ArcoRoon
+    info:
+      path: Arco/Info.plist
+      properties:
+        CFBundleDisplayName: Arco
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        LSMinimumSystemVersion: "14.0"
+        # A menu bar app: no Dock icon, no main window.
+        LSUIElement: true
+        NSLocalNetworkUsageDescription: Arco finds your Roon Core on the local network and streams your music to it.
+        NSHumanReadableCopyright: "© 2026 René Bouwmeester · Apache License 2.0"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: nl.renebouwmeester.arco
+        PRODUCT_NAME: Arco
+        DEVELOPMENT_TEAM: XX742N7ZNY
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_HARDENED_RUNTIME: YES
+        SWIFT_VERSION: "5.0"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
