@@ -41,12 +41,16 @@ rm -rf "$OUT"; mkdir -p "$ROOT/Applications" "$ROOT/Library/Audio/Plug-Ins/HAL"
 # The app: Release, universal, hardened runtime, timestamped signature.
 xcodebuild -project Arco.xcodeproj -scheme Arco -configuration Release -derivedDataPath build/rel \
   ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO \
-  CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="$APP_ID" DEVELOPMENT_TEAM=$TEAM \
+  CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="$APP_ID" DEVELOPMENT_TEAM=$TEAM CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
   OTHER_CODE_SIGN_FLAGS="--timestamp" build > "$OUT/build.log" 2>&1 \
   || { grep -E "error:" "$OUT/build.log" | head -10; echo "BUILD FAILED (see $OUT/build.log)"; exit 1; }
 APP="build/rel/Build/Products/Release/Arco.app"
 [ -d "$APP" ] && [ -f "$APP/Contents/MacOS/Arco" ] || { echo "no $APP"; exit 1; }
 ditto --norsrc --noextattr "$APP" "$ROOT/Applications/Arco.app"
+# Xcode adds the debugging entitlement get-task-allow by itself; notarization refuses it.
+if codesign -d --entitlements - "$ROOT/Applications/Arco.app" 2> /dev/null | grep -q get-task-allow; then
+  echo "the app still has com.apple.security.get-task-allow — notarization would refuse it"; exit 1
+fi
 echo "app: $(lipo -archs "$ROOT/Applications/Arco.app/Contents/MacOS/Arco")"
 
 # The driver: universal, hardened runtime, timestamped.
