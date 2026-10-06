@@ -33,6 +33,7 @@ struct MenuView: View {
                 content
             }
             Divider()
+            LoginItemToggle()
             HStack {
                 Button("Uninstall Arco…") { Uninstaller.run(bridge: bridge) }
                     .buttonStyle(.borderless)

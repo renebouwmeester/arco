@@ -2,6 +2,7 @@
 // driver, and Arco's own files go too — its Roon pairing, settings, log and permissions. Roon keeps listing the extension
 // until it is removed there; the question says so.
 import AppKit
+import ServiceManagement
 
 @MainActor
 enum Uninstaller {
@@ -23,6 +24,7 @@ enum Uninstaller {
             return
         }
         bridge.turnOff()   // the Mac's own output back first
+        try? SMAppService.mainApp.unregister()
         let shell = [
             "rm -rf '/Library/Audio/Plug-Ins/HAL/Arco.driver'",
             "pkgutil --forget nl.renebouwmeester.arco.pkg > /dev/null 2>&1",
