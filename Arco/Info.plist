@@ -24,9 +24,13 @@
 	<string>14.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Arco reads what the Music app plays (title, artist, album, cover) and passes Roon's play, pause and skip buttons on to it.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 René Bouwmeester · Apache License 2.0</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Arco finds your Roon Core on the local network and streams your music to it.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Arco reads the Arco audio output's loopback — the music the Music app plays to it. It never listens to a microphone.</string>
 </dict>
 </plist>

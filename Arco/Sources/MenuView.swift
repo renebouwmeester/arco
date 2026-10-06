@@ -5,6 +5,12 @@ import ArcoRoon
 
 struct MenuView: View {
     @ObservedObject var model: ArcoModel
+    @ObservedObject var bridge: Bridge
+
+    init(model: ArcoModel) {
+        self.model = model
+        self.bridge = model.bridge
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -51,6 +57,8 @@ struct MenuView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         case .paired:
+            sending
+            Divider()
             if model.zones.isEmpty {
                 Text("Roon has no zones right now.").font(.callout).foregroundStyle(.secondary)
             } else {
@@ -65,6 +73,38 @@ struct MenuView: View {
                     }
                 }
             }
+        }
+    }
+}
+
+extension MenuView {
+    /// The switch: the Music app to the chosen zone, or back to this Mac.
+    @ViewBuilder var sending: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle(isOn: Binding(get: { bridge.isOn }, set: { model.setSending($0) })) {
+                Text("Send to Roon").font(.body.weight(.medium))
+            }
+            .toggleStyle(.switch)
+            .disabled(!Bridge.driverInstalled || (model.selectedZone == nil && !bridge.isOn))
+            Text(sendingLine)
+                .font(.caption)
+                .foregroundStyle(isFailure ? Color.red : .secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var isFailure: Bool { if case .failed = bridge.phase { return true }; return false }
+
+    private var sendingLine: String {
+        if !Bridge.driverInstalled { return "The Arco audio driver isn't installed yet." }
+        let zone = bridge.zoneName ?? model.selectedZone?.name ?? "a zone"
+        switch bridge.phase {
+        case .off: return model.selectedZone == nil ? "Pick a zone below first." : "Music plays on this Mac. Switch on to play it on \(zone)."
+        case .waitingForMusic: return "Ready — press play in Music to start on \(zone)."
+        case .starting: return "Starting on \(zone)…"
+        case .playing: return "Playing on \(zone)."
+        case .paused: return "Paused on \(zone)."
+        case .failed(let message): return message
         }
     }
 }

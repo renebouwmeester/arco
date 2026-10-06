@@ -9,6 +9,7 @@ final class ArcoModel: ObservableObject {
     @Published private(set) var selectedZoneID: String?
 
     let connection: RoonConnection
+    let bridge: Bridge
     private let tracker = ZoneTracker()
 
     /// The chosen zone is remembered by id and by name: Roon gives a zone a new id when it is grouped or ungrouped,
@@ -24,6 +25,7 @@ final class ArcoModel: ObservableObject {
                              publisher: "René Bouwmeester", email: "arco@localhost"),
             required: [transportService, "com.roonlabs.audioinput:1"],
             stateFile: support.appendingPathComponent("roon.json"))
+        bridge = Bridge(connection: connection)
         selectedZoneID = UserDefaults.standard.string(forKey: Self.zoneIDKey)
         connection.onStateChange = { [weak self] state in self?.connectionChanged(state) }
         tracker.onChange = { [weak self] zones in self?.zonesChanged(zones) }
@@ -34,10 +36,18 @@ final class ArcoModel: ObservableObject {
     var selectedZone: RoonZone? { zones.first { $0.id == selectedZoneID } }
 
     func select(_ zone: RoonZone) {
+        let switching = zone.id != selectedZoneID
         selectedZoneID = zone.id
         UserDefaults.standard.set(zone.id, forKey: Self.zoneIDKey)
         UserDefaults.standard.set(zone.name, forKey: Self.zoneNameKey)
-        connection.setStatus("Ready — plays to \(zone.name)")
+        // Sending already: the music moves to the new zone.
+        if switching, bridge.isOn { Task { await bridge.turnOn(zone: zone) } }
+        else if !bridge.isOn { connection.setStatus("Ready — plays to \(zone.name)") }
+    }
+
+    /// The switch in the menu: send the Music app to the chosen zone, or give the Mac its output back.
+    func setSending(_ on: Bool) {
+        if on, let zone = selectedZone { Task { await bridge.turnOn(zone: zone) } } else { bridge.turnOff() }
     }
 
     func setVolume(_ zone: RoonZone, to value: Double) { tracker.setVolume(zone, to: value) }
@@ -51,6 +61,7 @@ final class ArcoModel: ObservableObject {
         } else {
             tracker.stop()
             zones = []
+            if bridge.isOn { bridge.turnOff() }
         }
     }
 

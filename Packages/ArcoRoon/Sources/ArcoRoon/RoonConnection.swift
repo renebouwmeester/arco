@@ -41,6 +41,8 @@ public final class RoonConnection: NSObject {
 
     public private(set) var state: State = .searching { didSet { if state != oldValue { onStateChange?(state) } } }
     public var onStateChange: ((State) -> Void)?
+    /// The address of the Core this connection talks to (a stream URL must be reachable from there).
+    public private(set) var coreHost: String?
 
     let extensionInfo: Extension
     let requiredServices: [String], optionalServices: [String]
@@ -118,6 +120,7 @@ public final class RoonConnection: NSObject {
             return
         }
         state = .connecting(coreName: core.name)
+        coreHost = core.host
         guard let url = URL(string: "ws://\(core.host):\(core.port)/api") else { retry(after: 5); return }
         let task = session.webSocketTask(with: url)
         task.maximumMessageSize = 64 << 20

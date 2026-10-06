@@ -1,0 +1,233 @@
+// The bridge: the Music app → the Arco output → its loopback → one growing stream → Roon's audio input on the chosen zone.
+//
+// On: the system output becomes Arco (the previous one is remembered, also across a crash), the loopback is read, and as
+// soon as Music plays a session begins on the zone and the stream goes into its play slot, with the current track's
+// title, artist, album and cover.
+//
+// A new track in Music is marked at the stream's position; Roon plays a few seconds behind, so the new track information
+// goes to Roon when Roon's own position (its Time events, in the same stream) reaches that mark — not when Music starts it.
+//
+// Pause and resume work both ways: Music paused → Roon pauses (and the stream waits for sound); Roon's pause or play
+// button → Music. Events that Arco caused itself are ignored for a few seconds. Roon's next and previous go to Music.
+//
+// Off, quit, or the zone taken over in Roon: the session ends and the previous output comes back.
+//
+// Milestone 2: the Arco output runs at a fixed 44.1 kHz. A clock per track comes later.
+import AppKit
+import ArcoRoon
+import CoreAudio
+import Foundation
+
+@MainActor
+final class Bridge: ObservableObject {
+    enum Phase: Equatable {
+        case off
+        case waitingForMusic
+        case starting
+        case playing
+        case paused
+        case failed(String)
+    }
+
+    @Published private(set) var phase: Phase = .off
+    @Published private(set) var zoneName: String?
+
+    private let connection: RoonConnection
+    private let server = StreamServer()
+    private let capture = Capture()
+    private let music = MusicWatcher()
+    private var session: AudioInputSession?
+    private var stream: LiveStream?
+    private var streamNumber = 0
+    private var zoneID: String?
+    /// Track starts in the stream that Roon has not reached yet.
+    private var marks: [(ms: Int, info: JSON)] = []
+    /// Until when Roon's pause / play events are our own doing.
+    private var ownUntil = Date.distantPast
+    private static let previousOutputKey = "PreviousOutputUID"
+    private static let fixedRate = 44_100.0
+    private let directory = FileManager.default.temporaryDirectory.appendingPathComponent("arco", isDirectory: true)
+
+    init(connection: RoonConnection) {
+        self.connection = connection
+        try? FileManager.default.removeItem(at: directory)   // leftovers of an earlier run
+        music.onChange = { [weak self] state, track, changed in self?.musicChanged(state, track, changed) }
+        let holder = streamHolder
+        capture.onAudio = { pcm, frames, firstSound in holder.write(pcm, frames, firstSound) }
+        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.turnOff() }
+        }
+        restoreOutputAfterCrash()
+    }
+
+    var isOn: Bool { phase != .off }
+    static var driverInstalled: Bool { AudioDevices.arco != nil }
+
+    // MARK: - On and off
+
+    func turnOn(zone: RoonZone) async {
+        turnOff()
+        zoneName = zone.name
+        guard case .paired = connection.state else { return fail("Roon is not connected") }
+        guard let arco = AudioDevices.arco else { return fail("Install the Arco audio driver first") }
+        guard await server.start() != nil else { return fail("Could not open the stream port") }
+        zoneID = zone.id
+        AudioDevices.setSampleRate(Self.fixedRate, of: arco)
+        if let current = AudioDevices.defaultOutput, current != arco, let uid = AudioDevices.uid(of: current) {
+            UserDefaults.standard.set(uid, forKey: Self.previousOutputKey)
+        }
+        AudioDevices.setDefaultOutput(arco)
+        if let error = capture.start(device: arco) { return fail(error) }
+        music.refresh()
+        if music.state == .playing { await startSession() } else { phase = .waitingForMusic }
+        connection.setStatus("Playing to \(zone.name)")
+    }
+
+    func turnOff() {
+        session?.end()
+        session = nil
+        capture.stop()
+        server.setStream(nil)
+        streamHolder.set(nil)
+        stream?.close()
+        stream = nil
+        marks = []
+        zoneID = nil
+        restoreOutput()
+        if phase != .off { connection.setStatus("Ready") }
+        phase = .off
+    }
+
+    private func fail(_ message: String) {
+        turnOff()
+        phase = .failed(message)
+    }
+
+    // MARK: - The session in Roon
+
+    private func startSession() async {
+        guard let zoneID, let host = connection.coreHost, let address = Discovery.localAddress(toward: host) else {
+            return fail("Can't reach the Roon Core from this Mac")
+        }
+        phase = .starting
+        let s = AudioInputSession(connection: connection, zoneID: zoneID)
+        s.onEvent = { [weak self] event in self?.roonEvent(event) }
+        guard await s.begin(displayName: "Arco", iconURL: "http://\(address):\(server.port)/icon.png") else {
+            return fail("Roon didn't start a session on this zone")
+        }
+        session = s
+        streamNumber += 1
+        let live = LiveStream(number: streamNumber, rate: capture.rate, directory: directory)
+        stream = live
+        streamHolder.set(live)
+        server.setStream(live)
+        marks = []
+        // A little of the music first, so Roon's first read finds something.
+        for _ in 0..<50 where live.positionMs < 500 { try? await Task.sleep(for: .milliseconds(100)) }
+        let info = makeInfo(music.track, address: address)
+        ownUntil = Date().addingTimeInterval(3)
+        let answer = await s.play(track: String(streamNumber), url: "http://\(address):\(server.port)/stream/\(streamNumber).wav", info: info)
+        guard session === s else { return }
+        if answer == "Playing" || answer == "Unpaused" { phase = .playing } else { fail("Roon: \(answer)") }
+    }
+
+    private func makeInfo(_ track: MusicWatcher.Track?, address: String? = nil) -> JSON {
+        guard let track else { return AudioInputSession.info(title: "Arco", artist: "", album: "", imageURL: nil) }
+        var imageURL: String?
+        let host = address ?? connection.coreHost.flatMap(Discovery.localAddress(toward:))
+        if let cover = music.artwork(), let host {
+            let key = "\(track.id).\(cover.type == "image/png" ? "png" : "jpg")"
+            server.addCover(cover.data, type: cover.type, key: key)
+            imageURL = "http://\(host):\(server.port)/cover/\(key)"
+        }
+        return AudioInputSession.info(title: track.title, artist: track.artist, album: track.album, imageURL: imageURL)
+    }
+
+    private func roonEvent(_ event: AudioInputSession.Event) {
+        let own = Date() < ownUntil
+        switch event {
+        case .time(_, let ms):
+            // Roon reached the start of the next track in the stream: now it shows it.
+            while let first = marks.first, ms >= first.ms - 300 {
+                marks.removeFirst()
+                let info = first.info
+                Task { await session?.updateInfo(track: String(streamNumber), info: info) }
+            }
+        case .paused:
+            if !own { ownUntil = Date().addingTimeInterval(3); music.pause() }
+            phase = .paused
+        case .unpaused:
+            if !own { ownUntil = Date().addingTimeInterval(3); music.play() }
+            phase = .playing
+        case .stopped:
+            // Roon stops a zone five seconds into a pause; a stop while playing is the user's.
+            if phase == .playing, !own { ownUntil = Date().addingTimeInterval(3); music.pause() }
+        case .control(let control):
+            if control.contains("next") { music.next() } else if control.contains("prev") { music.previous() }
+        case .ended:
+            fail("The stream reached its end (three hours) — turn Arco on again")
+        case .failed(_, let reason):
+            fail("Roon: \(reason)")
+        case .sessionEnded:
+            // Someone played something else on the zone: give the Mac its output back.
+            turnOff()
+        case .playing:
+            break
+        }
+    }
+
+    // MARK: - The Music app
+
+    private func musicChanged(_ state: MusicWatcher.State, _ track: MusicWatcher.Track?, _ changed: Bool) {
+        switch phase {
+        case .waitingForMusic:
+            if state == .playing { Task { await startSession() } }
+        case .playing, .paused, .starting:
+            if changed, let track, let live = stream {
+                marks.append((live.positionMs, makeInfo(track)))
+            }
+            if state != .playing, phase == .playing {
+                stream?.pauseWriting()
+                roonControl("pause")
+                phase = .paused
+            } else if state == .playing, phase == .paused {
+                roonControl("play")
+                phase = .playing
+            }
+        default:
+            break
+        }
+    }
+
+    private func roonControl(_ control: String) {
+        guard let zoneID else { return }
+        ownUntil = Date().addingTimeInterval(3)
+        connection.request("\(transportService)/control", ["zone_or_output_id": zoneID, "control": control])
+    }
+
+    // MARK: - The audio thread
+
+    /// The stream the capture thread writes to — the audio thread never touches the bridge itself.
+    private let streamHolder = StreamHolder()
+    final class StreamHolder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stream: LiveStream?
+        func set(_ s: LiveStream?) { lock.lock(); stream = s; lock.unlock() }
+        func write(_ pcm: Data, _ frames: Int, _ firstSound: Int?) {
+            lock.lock(); let s = stream; lock.unlock()
+            s?.write(pcm, frames: frames, firstSound: firstSound)
+        }
+    }
+
+    // MARK: - The system output
+
+    private func restoreOutput() {
+        guard let arco = AudioDevices.arco, AudioDevices.defaultOutput == arco else { return }
+        if let uid = UserDefaults.standard.string(forKey: Self.previousOutputKey), let previous = AudioDevices.device(uid: uid) {
+            AudioDevices.setDefaultOutput(previous)
+        }
+    }
+
+    /// Arco is the output but the bridge is off (Arco quit unexpectedly): the Mac's own output back.
+    private func restoreOutputAfterCrash() { restoreOutput() }
+}

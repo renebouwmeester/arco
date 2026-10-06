@@ -64,6 +64,32 @@ public enum Discovery {
         return found.values.sorted { $0.name < $1.name }
     }
 
+    /// This Mac's address on the network that reaches `host` — the address the Core can fetch a stream from. (A UDP
+    /// "connect" sends nothing; it only picks the route.)
+    public static func localAddress(toward host: String) -> String? {
+        let fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var remote = sockaddr_in()
+        remote.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        remote.sin_family = sa_family_t(AF_INET)
+        remote.sin_port = UInt16(9330).bigEndian
+        guard inet_pton(AF_INET, host, &remote.sin_addr) == 1 else { return nil }
+        let connected = withUnsafePointer(to: &remote) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+        }
+        guard connected == 0 else { return nil }
+        var local = sockaddr_in()
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let named = withUnsafeMutablePointer(to: &local) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &length) }
+        }
+        guard named == 0 else { return nil }
+        var text = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+        guard inet_ntop(AF_INET, &local.sin_addr, &text, socklen_t(INET_ADDRSTRLEN)) != nil else { return nil }
+        return String(cString: text)
+    }
+
     static func makeQuery() -> [UInt8] {
         var packet = Array("SOOD".utf8) + [2, UInt8(ascii: "Q")]
         func property(_ name: String, _ value: String) {
