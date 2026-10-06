@@ -207,8 +207,12 @@ final class SliceStore: @unchecked Sendable {
         guard let p = pendingRun else { return }
         pendingRun = nil
         counter += 1
+        // As long as a WAV can be: its length is a 32-bit field. Three hours fit at 44.1 and 48 kHz; at 96 kHz they would
+        // be 6.2 GB — the header overflowed and Arco crashed (21:32:25). So about two hours at 96, one at 192; a full run
+        // simply goes on in the next one.
+        let maxFrames = (Int(UInt32.max) - 36) / Self.bytesPerFrame
         let s = Slice(number: counter, path: "/stream/\(session)-\(counter).wav", rate: rate,
-                      frames: Int(Self.runHours * 3600 * rate), info: p.track.info, follows: p.follows, directory: directory)
+                      frames: min(Int(Self.runHours * 3600 * rate), maxFrames), info: p.track.info, follows: p.follows, directory: directory)
         slices[s.number] = s
         current = s
         track = p.track
