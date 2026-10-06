@@ -255,13 +255,14 @@ final class Bridge: ObservableObject {
                 marks.append((live.positionMs, makeInfo(track)))
             }
             if state != .playing, phase == .playing {
-                // Music pauses itself for a moment when its output changes (20:18:49: paused, playing again 0.14 s
-                // later). Only a pause that lasts is passed on.
+                // The stream closes at once — whatever silence Music leaves is not written (20:31:59: Music paused itself
+                // for 0.22 s, seven seconds after the start, and that gap went into the stream). Roon only hears of a
+                // pause that lasts: Music also pauses itself for a moment when its output changes (20:18:49: 0.14 s).
+                stream?.pauseWriting()
                 pendingPause?.cancel()
                 pendingPause = Task { @MainActor [weak self] in
                     try? await Task.sleep(for: .milliseconds(600))
                     guard let self, !Task.isCancelled, self.music.state != .playing, self.phase == .playing else { return }
-                    self.stream?.pauseWriting()
                     self.roonControl("pause")
                     self.phase = .paused
                 }
