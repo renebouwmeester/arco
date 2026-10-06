@@ -128,8 +128,48 @@ final class SliceStore: @unchecked Sendable {
         return Double(end - c.written) / c.rate
     }
 
-    /// The Music app paused: write on to real silence, then wait for sound.
-    func pauseWriting() { lock.lock(); if gate == .writing { gate = .waitForSilence }; lock.unlock() }
+    /// The Music app paused. Its notification comes about 0.2 s after its last note, so the tail of the run already holds
+    /// Music's fade (~70 ms) and silence (21:41:36: 0.27 s together — the hiccup Roon played a few seconds after resuming).
+    /// When the tail already ends in silence, trim it now and wait for sound; otherwise write on to real silence first.
+    func pauseWriting() {
+        lock.lock(); defer { lock.unlock() }
+        guard gate == .writing else { return }
+        if let c = current, !c.closed, c.written > 0, isSilent(c, frame: c.written - 1) {
+            trimTail(c)
+            gate = .waitForSound
+        } else {
+            gate = .waitForSilence
+        }
+    }
+
+    /// The last 0.4 s of a run are held back from Roon: room to take out the tail of a pause before anyone has read it.
+    /// (Roon plays seconds behind anyway.)
+    private static let holdBackSeconds = 0.4
+    private static let fadeSeconds = 0.08
+
+    /// Under the lock: the run's tail of silence, and Music's fade before it, taken out — as far as it is still held back.
+    private func trimTail(_ c: Slice) {
+        let held = Int(Self.holdBackSeconds * c.rate)
+        let floor = max(0, c.written - held, c.readers.map { $0.offset / Self.bytesPerFrame }.max() ?? 0)
+        var end = c.written
+        while end > floor, isSilent(c, frame: end - 1) { end -= 1 }
+        let silence = c.written - end
+        end = max(floor, end - Int(Self.fadeSeconds * c.rate))
+        guard end < c.written else { return }
+        let removed = c.written - end
+        try? c.writer?.truncate(atOffset: UInt64(end * Self.bytesPerFrame))
+        try? c.writer?.seekToEnd()
+        c.written = end
+        Log.note("runs: \(c.number) — pause: \(Int(Double(removed) / c.rate * 1000)) ms of fade and silence taken out (\(Int(Double(silence) / c.rate * 1000)) ms silence)")
+    }
+
+    /// Under the lock: whether a frame of the run is digital silence.
+    private func isSilent(_ c: Slice, frame: Int) -> Bool {
+        guard let r = c.reader else { return false }
+        try? r.seek(toOffset: UInt64(frame * Self.bytesPerFrame))
+        guard let d = try? r.read(upToCount: Self.bytesPerFrame), d.count == Self.bytesPerFrame else { return false }
+        return d.allSatisfy { $0 == 0 }
+    }
 
     /// Where the current run is (for the log).
     var status: (number: Int, writtenMs: Int)? {
@@ -162,7 +202,12 @@ final class SliceStore: @unchecked Sendable {
         case .writing:
             break
         case .waitForSilence:
-            if firstSound == nil { gate = .waitForSound; Log.note("runs: silence — waiting for sound"); return }
+            if firstSound == nil {
+                gate = .waitForSound
+                if let c = current, !c.closed { trimTail(c) }
+                Log.note("runs: silence — waiting for sound")
+                return
+            }
         case .waitForSound:
             guard let first = firstSound else { return }
             gate = .writing
@@ -295,7 +340,9 @@ final class SliceStore: @unchecked Sendable {
     private func pump(_ s: Slice, _ r: Reader) {
         guard !r.busy else { return }
         if r.offset >= s.bytes { r.connection.cancel(); return }
-        let available = s.written * Self.bytesPerFrame
+        // Held back: the last 0.4 s of an open run (see trimTail); a frozen run gives all it has.
+        let held = s.closed ? 0 : Int(Self.holdBackSeconds * s.rate)
+        let available = max(0, s.written - held) * Self.bytesPerFrame
         guard r.offset < available, let reader = s.reader else { return }
         let count = min(262_144, available - r.offset)
         try? reader.seek(toOffset: UInt64(r.offset))
