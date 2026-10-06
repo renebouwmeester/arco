@@ -353,13 +353,16 @@ final class Bridge: ObservableObject {
                 }
             }
             if state != .playing, phase == .playing {
-                // The run closes at once — whatever silence Music leaves is not written. Roon pauses 0.6 s later, unless
+                // The run closes at once — whatever silence Music leaves is not written. Roon pauses 0.2 s later, unless
                 // Music plays again by then or the rate changes around it: then it was Music changing the clock (~1.2 s;
-                // the rate change comes just before its pause, or just after — 21:34:58), which must not reach Roon.
+                // the rate change comes just before its pause, or at most 0.12 s after — 21:34:58), which must not reach
+                // Roon. Not longer: paused 0.6 s late (21:36:43), Roon paused its player but left the KEF playing until it
+                // released it five seconds later — and the restart then took five seconds; paused at once, the KEF paused
+                // at once and resumed quickly (21:26:30, 21:34:26) — as with Qobuz.
                 store?.pauseWriting()
                 pendingPause?.cancel()
                 pendingPause = Task { @MainActor [weak self] in
-                    try? await Task.sleep(for: .milliseconds(600))
+                    try? await Task.sleep(for: .milliseconds(200))
                     guard let self, !Task.isCancelled, self.music.state != .playing, self.phase == .playing else { return }
                     if Date().timeIntervalSince(self.rateChangedAt) < 2 {
                         Log.note("pause: Music changes the clock — Roon plays on")
