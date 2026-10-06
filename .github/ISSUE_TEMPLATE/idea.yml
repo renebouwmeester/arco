@@ -1,0 +1,11 @@
+name: An idea
+description: Something Arco could do, or do better
+labels: [idea]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+      description: What you'd like, and the situation where you'd use it
+    validations:
+      required: true

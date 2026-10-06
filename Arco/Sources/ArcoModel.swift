@@ -24,7 +24,8 @@ final class ArcoModel: ObservableObject {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
         connection = RoonConnection(
             extension: .init(id: "nl.renebouwmeester.arco", displayName: "Arco", version: version,
-                             publisher: "René Bouwmeester", email: "arco@localhost"),
+                             publisher: "René Bouwmeester", email: "",
+                             website: "https://github.com/renebouwmeester/arco"),
             required: [transportService, "com.roonlabs.audioinput:1"],
             stateFile: support.appendingPathComponent("roon.json"))
         bridge = Bridge(connection: connection)

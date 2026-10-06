@@ -6,23 +6,93 @@ Arco takes what the Music app (or the Spotify app) plays on your Mac and hands i
 title, artist, album and cover of each track. Roon does the rest: your zones, your DSP, your endpoints — including the
 ones that only speak RAAT.
 
-> **Status:** early development. Not ready for use yet.
+> **Status:** beta. It works well in daily use here; expect rough edges, and please report them.
 
-## How it works
+## What you get
 
-- **Arco** — a virtual audio output. Music plays to it; nothing leaves your Mac until Arco sends it on.
-- **The bridge** — Arco reads that output back (bit for bit what Music produced), cuts it per track and serves it to
-  your Roon Core over your local network.
-- **The extension** — Arco registers with your Roon Core as an extension and uses Roon's audio input API to play the
-  stream on the zone you pick in the menu. Roon shows what is playing, and its own transport buttons work.
-
-Each track arrives in Roon at its own sample rate: a 44.1 kHz track plays at 44.1, the next 96 kHz track at 96.
+- **Any Roon zone, from the menu bar.** Pick the zone, switch on *Send to Roon*, press play in Music or Spotify. The
+  Roon app doesn't need to be open — a laptop on your lap with Music is enough.
+- **A clock per track.** Each track arrives in Roon at its own sample rate: a 44.1 kHz track plays at 44.1, the next
+  96 kHz track at 96. The menu shows the rate Roon receives.
+- **Gapless** between tracks at the same rate — a live album or a classical work plays through without a seam.
+- **What's playing, in Roon:** title, artist, album and cover per track. Roon's play, pause, next and previous buttons
+  work, and so does the zone's volume, in Roon or in Arco's menu.
+- **One voice.** Start Spotify while Music plays (or the other way round) and Arco follows the one that plays; the
+  other pauses.
+- **Updates** arrive through the app itself (Sparkle), as signed and notarized packages.
 
 ## Requirements
 
-- macOS 14 or later
+- macOS 14 Sonoma or later, on Apple silicon or Intel
 - A Roon Core on the same network (Roon 2.x)
-- Apple Music and/or Spotify on the Mac
+- The Music app and/or Spotify on the Mac
+- For the clock per track: in Music › Settings › Playback, set *Audio Quality* to **Lossless** (up to 24-bit/192 kHz
+  for hi-res). Spotify always plays at 44.1 kHz.
+
+## Install
+
+1. Download `Arco-<version>.pkg` from [Releases](https://github.com/renebouwmeester/arco/releases) and open it.
+2. The installer puts **Arco** in Applications and its **audio driver** in `/Library/Audio/Plug-Ins/HAL`. It asks for
+   an administrator password, and restarts the Mac's audio for a moment.
+3. Arco opens in the menu bar with a short *Get started* list:
+   - **Audio driver** — installed by the package.
+   - **Microphone access** — Arco reads its *own* audio output back (the music Music plays to it). macOS files that
+     under the microphone; Arco never listens to a microphone.
+   - **Control Music / Spotify** — to follow what plays and pass on Roon's buttons.
+   - **Enabled in Roon** — in Roon, open *Settings › Extensions* and press *Enable* next to Arco.
+
+The list goes away once everything is in place. *Open at login* is a checkbox in the menu.
+
+## Use
+
+1. Pick a zone under *Play to*.
+2. Switch on **Send to Roon**. Arco becomes the Mac's sound output.
+3. Press play in Music or Spotify.
+
+Switch it off and the Mac gets its own output back. Switching zones while it plays moves the music to the new zone.
+
+## Good to know
+
+- Roon plays a few seconds behind the Music app: Roon keeps a buffer of the live stream, as it does for any source.
+- A change of sample rate between two tracks is a fresh start in Roon — gapless holds between tracks at the same rate.
+- Roon's progress bar may count through a stretch of tracks at the same rate rather than the current track alone.
+- Everything the Mac plays goes to Roon while *Send to Roon* is on — including system sounds.
+
+## Uninstall
+
+Choose **Uninstall Arco…** in the menu. It removes the app and the driver (with an administrator password), restarts
+the Mac's audio, and clears Arco's settings, log and permissions. Remove the extension in Roon's *Settings ›
+Extensions* as well.
+
+## Problems and ideas
+
+- Arco keeps a log at `~/Library/Logs/Arco/arco.log`; it helps a lot with a bug report. It contains track titles and
+  local network addresses — look it over before you share it.
+- [Report a problem or suggest something](https://github.com/renebouwmeester/arco/issues/new/choose), or ask in
+  [Discussions](https://github.com/renebouwmeester/arco/discussions).
+
+## How it works
+
+- **The Arco output** — a virtual audio device (an AudioServerPlugIn). Music plays to it; nothing leaves your Mac until
+  Arco sends it on.
+- **The bridge** — Arco reads that output back (bit for bit what Music produced), cuts it into runs of tracks at the
+  same rate and serves them to your Roon Core over your local network.
+- **The extension** — Arco registers with your Roon Core and uses Roon's audio input API to play the stream on the zone
+  you pick, with the information of each track. Roon's transport buttons come back to Arco, which passes them on to
+  Music or Spotify.
+
+## Building from source
+
+Needs Xcode and [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`).
+
+```sh
+./build.sh          # generate the project, build, and run Arco from build/
+./build.sh driver   # build the audio driver; install it with: sudo build/driver/install.sh
+./build.sh check    # build only
+```
+
+`release.sh` builds the signed and notarized package, `publish.sh` puts it on GitHub (both need the maintainer's
+certificates and keys). The icons are drawn by `Design/make-icons.swift`.
 
 ## A note on quality
 

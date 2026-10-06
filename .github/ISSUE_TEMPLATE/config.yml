@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: A question
+    url: https://github.com/renebouwmeester/arco/discussions
+    about: How do I…, does Arco work with…, — ask in Discussions

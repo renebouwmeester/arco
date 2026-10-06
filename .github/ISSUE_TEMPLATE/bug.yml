@@ -1,0 +1,48 @@
+name: Something doesn't work
+description: A problem with Arco — no sound, a gap, a wrong title, a switch that won't switch
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: And what you expected instead
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to get there
+      description: The steps, as far as you know them — "played an album in Music, skipped to track 3, …"
+  - type: input
+    id: arco
+    attributes:
+      label: Arco version
+      placeholder: "0.1.1"
+    validations:
+      required: true
+  - type: input
+    id: setup
+    attributes:
+      label: Mac, macOS and Roon
+      placeholder: "MacBook Air M2, macOS 15.4, Roon 2.0 (build 1500)"
+    validations:
+      required: true
+  - type: dropdown
+    id: source
+    attributes:
+      label: Playing from
+      options: [Music app, Spotify, Both]
+  - type: input
+    id: zone
+    attributes:
+      label: Roon zone
+      description: What kind of endpoint — a RAAT streamer, an AirPlay speaker, a Chromecast, a Roon Bridge…
+  - type: textarea
+    id: log
+    attributes:
+      label: Arco's log
+      description: >-
+        The lines around the moment it happened, from ~/Library/Logs/Arco/arco.log. It contains track titles and local
+        network addresses — remove what you'd rather not share.
+      render: text
