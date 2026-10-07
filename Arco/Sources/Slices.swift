@@ -43,6 +43,8 @@ final class SliceStore: @unchecked Sendable {
         /// Nothing more is written: complete, or dropped.
         var closed = false
         var dropped = false
+        /// Roon has its header (and with it the rate and the length): from now on the rate can't change in place.
+        var headerSent = false
         init(number: Int, path: String, track: Track?, directory: URL) {
             self.number = number; self.path = path; self.track = track
             file = directory.appendingPathComponent("slice-\(number).pcm")
@@ -56,6 +58,9 @@ final class SliceStore: @unchecked Sendable {
             return max(1, Int((Double(track.durationMs) / 1000 * rate).rounded()))
         }
         var isFull: Bool { frames.map { written >= $0 } ?? false }
+        /// A second at one rate (or complete): the Music app switches the device to a track's own rate 0.2–5.5 s after
+        /// a start — the header waits until the rate holds.
+        var settled: Bool { closed || rate.map { Double(written) >= $0 * SliceStore.settleSeconds } ?? false }
         func ms(_ frame: Int) -> Int { Int(Double(frame) / (rate ?? 44_100) * 1000) }
     }
 
@@ -77,6 +82,7 @@ final class SliceStore: @unchecked Sendable {
     }
 
     static let bytesPerFrame = 6
+    static let settleSeconds = 1.0
     /// Unique per session: Roon caches by URL, and slice 1 of a new session must never be served from slice 1 of the
     /// last one (20:56:53: Roon showed "24/48, 1:14" — the old slice — for a new one at 44.1 of 528 s).
     private let session = String(UInt64.random(in: 0...UInt64.max), radix: 36)
@@ -158,10 +164,10 @@ final class SliceStore: @unchecked Sendable {
         return slices[number].flatMap { $0.dropped ? nil : $0 }
     }
 
-    /// Whether a slice's header is known (its track and rate).
+    /// Whether a slice's header can go out (its track and a settled rate).
     func isKnown(_ number: Int) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        return slices[number]?.frames != nil
+        return slices[number].map { $0.frames != nil && $0.settled } ?? false
     }
 
     /// The source stopped (the end of an album, a playlist): nothing comes after what was written. Placeholders go — a
@@ -304,31 +310,39 @@ final class SliceStore: @unchecked Sendable {
 
     /// Under the lock: the music changed rate while going into `w`.
     private func rateChanged(_ w: Slice, to rate: Double) {
-        let old = Int(w.rate ?? 0)
-        if w.track == nil {
-            // A placeholder with sound at the old rate: Music's last moments before it changed the clock for the next
-            // track. It begins again at the new rate.
-            try? w.writer?.truncate(atOffset: 0); try? w.writer?.seekToEnd()
-            w.written = 0; w.rate = rate
-            Log.note("slices: \(w.number) — the next track at \(Int(rate)) Hz (was \(old))")
-        } else if let left = remainingLocked(w), left < 8 {
+        let old = w.rate ?? rate
+        let nearEnd = w.track != nil && (remainingLocked(w) ?? 99) < 8
+        if nearEnd {
             // Between two tracks (Music pauses there to change the clock): the slice is filled with silence to its
             // declared length — Roon expects those bytes — and the next one begins at the new rate.
             let rest = (w.frames ?? w.written) - w.written
             if rest > 0 { append(Data(count: rest * Self.bytesPerFrame), frames: rest, to: w) }
-            Log.note("slices: \(w.number) complete with \(Int(Double(rest) / Double(max(old, 1)) * 1000)) ms silence — rate \(old) → \(Int(rate))")
+            Log.note("slices: \(w.number) complete with \(Int(Double(rest) / old * 1000)) ms silence — rate \(Int(old)) → \(Int(rate))")
             complete(w)
             writing = slice(after: w)
+        } else if !w.headerSent {
+            // The start of a track at the device's old rate (Music switches 0.2–5.5 s after a start): Roon hasn't seen
+            // this slice's header yet, so what was written is converted to the new rate and the slice goes on — the start
+            // of the track stays.
+            var converted = Data()
+            if w.written > 0, let r = w.reader {
+                try? r.seek(toOffset: 0)
+                converted = Resample.pcm24((try? r.readToEnd()) ?? Data(), from: old, to: rate)
+            }
+            try? w.writer?.truncate(atOffset: 0); try? w.writer?.seekToEnd()
+            w.written = 0; w.rate = rate
+            if !converted.isEmpty { try? w.writer?.write(contentsOf: converted); w.written = converted.count / Self.bytesPerFrame }
+            Log.note("slices: \(w.number) — rate \(Int(old)) → \(Int(rate)) before Roon had it: \(w.ms(w.written)) ms converted, it goes on")
         } else {
-            // Inside a track (Music settling on the track's rate a few seconds after a start): the rest of the track
-            // becomes a new slice, into Roon's play slot at once.
+            // Inside a track whose header Roon already has: the rest of the track becomes a new slice, into Roon's play
+            // slot at once. Only this slice and what follows go — not the one Roon may still be playing.
             let left = Int((remainingLocked(w) ?? 1) * 1000)
-            Log.note("slices: \(w.number) cut — rate \(old) → \(Int(rate)) inside the track; \(left) ms go on in a new slice")
+            Log.note("slices: \(w.number) cut — rate \(Int(old)) → \(Int(rate)) inside the track; \(left) ms go on in a new slice")
             let t = w.track.map { Track(info: $0.info, durationMs: max(1000, left)) }
-            for s in slices.values { drop(s) }
-            let s = newSlice(track: t)
-            writing = s
-            announceFirstSound = s
+            for x in slices.values where x.number >= w.number { drop(x) }
+            let n = newSlice(track: t)
+            writing = n
+            announceFirstSound = n
         }
     }
 
@@ -351,15 +365,22 @@ final class SliceStore: @unchecked Sendable {
             Log.note("slices: \(s.number) was announced late — what came after its length went on in \(next.number)")
             complete(s)
         }
+        answerWaiting(s)
+    }
+
+    /// Under the lock: requests that waited for the header get it, once the track is known and the rate holds.
+    private func answerWaiting(_ s: Slice) {
+        guard !s.waiting.isEmpty, let frames = s.frames, let rate = s.rate, s.settled else { return }
         let waiting = s.waiting
         s.waiting = []
-        if !waiting.isEmpty { Log.note("slices: \(s.number) known (\(Int(rate)) Hz, \(s.ms(frames)) ms) — answering Roon") }
+        Log.note("slices: \(s.number) known (\(Int(rate)) Hz, \(s.ms(frames)) ms) — answering Roon")
         for w in waiting { respond(s, w.connection, from: w.from, headOnly: w.headOnly) }
     }
 
     /// Under the lock: no more music for this slice; its readers get all of it.
     private func complete(_ s: Slice) {
         s.closed = true
+        answerWaiting(s)
         for r in s.readers { pump(s, r) }
     }
 
@@ -393,6 +414,7 @@ final class SliceStore: @unchecked Sendable {
     private func append(_ d: Data, frames n: Int, to s: Slice) {
         try? s.writer?.write(contentsOf: d)
         s.written += n
+        answerWaiting(s)
         for r in s.readers { pump(s, r) }
     }
 
@@ -406,8 +428,8 @@ final class SliceStore: @unchecked Sendable {
         if let range, let match = range.range(of: #"bytes=(\d+)-"#, options: .regularExpression) {
             from = Int(range[match].filter(\.isNumber)) ?? 0
         }
-        if s.frames == nil {
-            // Roon opening its queue before Music began the next track: the answer waits for it.
+        if s.frames == nil || !s.settled {
+            // Roon opening its queue before Music began the next track (or before its rate holds): the answer waits.
             s.waiting.append((connection, from, headOnly))
             Log.note("slices: \(s.number) asked for before it is known — the answer waits")
             return true
@@ -428,6 +450,7 @@ final class SliceStore: @unchecked Sendable {
         var head = Data(http.utf8)
         if headOnly { connection.send(content: head, completion: .contentProcessed { _ in connection.cancel() }); return }
         if from < 44 { head.append(Self.wavHeader(rate: rate, frames: frames).dropFirst(from)) }
+        s.headerSent = true
         let r = Reader(connection: connection, offset: max(0, from - 44))
         let host = Self.host(connection)
         for old in s.readers where host != nil && Self.host(old.connection) == host { old.connection.cancel() }

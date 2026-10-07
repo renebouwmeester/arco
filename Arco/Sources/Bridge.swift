@@ -235,13 +235,14 @@ final class Bridge: ObservableObject {
         }
     }
 
-    /// A slice for the play slot began (its first sound arrived — the start, a skip, a cut): into Roon at once, with a
-    /// little of the music first so Roon's first read finds something.
+    /// A slice for the play slot began (its first sound arrived — the start, a skip, a cut): into Roon as soon as its
+    /// rate holds (a second of music), so Roon's first read finds something and the header doesn't change under it.
     private func sliceStarted(_ slice: SliceStore.Slice) {
         guard let s = session, let address else { return }
         let url = "http://\(address):\(server.port)\(slice.path)"
         Task { @MainActor in
-            for _ in 0..<30 where (self.store?.status?.writtenMs ?? 0) < 500 { try? await Task.sleep(for: .milliseconds(100)) }
+            // A second at one rate first (Music may still switch the device to the track's own rate), at most three.
+            for _ in 0..<30 where self.store?.isKnown(slice.number) != true { try? await Task.sleep(for: .milliseconds(100)) }
             guard self.session === s else { return }
             // Replaced in the meantime (a skip right after): the newer slice goes to Roon, not this one.
             guard self.store?.isLive(slice.number) == true else { Log.note("slice \(slice.number) superseded before it reached Roon"); return }
