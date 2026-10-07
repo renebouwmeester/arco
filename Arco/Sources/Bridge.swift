@@ -368,7 +368,21 @@ final class Bridge: ObservableObject {
             // A slice replaced by a new play (a skip, a cut at a change of rate): Roon confirms it took it out.
             break
         case .control(let control):
-            if control.contains("next") { source.next() } else if control.contains("prev") { source.previous() }
+            if control.contains("next") { source.next() }
+            else if control.contains("prev") {
+                // "Previous" a few seconds into a track starts it over: the Music app reports no new track, so nothing
+                // would change in the run and Roon would play the restart only after its lag (7 Oct 22:17). Without a new
+                // track within half a second, the current one begins a new run from its start.
+                let before = source.track?.id
+                source.previous()
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .milliseconds(500))
+                    guard let self, let store = self.store, let t = self.source.track, t.id == before,
+                          self.phase == .playing || self.phase == .paused else { return }
+                    Log.note("previous: \(t.title) starts over — a new run")
+                    store.startTrack(.init(info: self.makeInfo(t), durationMs: t.durationMs), newRun: true)
+                }
+            }
         case .sessionEnded:
             // Someone played something else on the zone: give the Mac its output back.
             turnOff()
