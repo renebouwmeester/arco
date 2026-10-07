@@ -254,10 +254,13 @@ final class Bridge: ObservableObject {
                 // And the new run's own supply: the seam in Roon is then as long as Music's own pause to change the clock.
                 await self.waitForSupply()
             } else {
-                // Four seconds at one rate first (at most six): the Music app starts a track at the device's old rate and
-                // switches to its own 0.2–5.5 s later (7 Oct 21:53: four) — a switch before Roon has the header is converted
-                // in place, one after it costs a new start in Roon. And Roon starts with that much in hand.
-                for _ in 0..<60 where self.store?.isSettled(slice, seconds: 4) != true { try? await Task.sleep(for: .milliseconds(100)) }
+                // The first run of a session: four seconds at one rate first (at most six) — the Music app starts at the
+                // device's old rate and switches to the track's own 0.2–5.5 s later (7 Oct 21:53: four); a switch before
+                // Roon has the header is converted in place. A skip within a session keeps its half second (7 Oct 22:12, on
+                // the Ellipse: four seconds more after every "next" was too slow); a change of rate after it is caught by
+                // freezing the run, as between two tracks.
+                let settle = self.roonSlice == 0 ? 4.0 : 0.5
+                for _ in 0..<60 where self.store?.isSettled(slice, seconds: settle) != true { try? await Task.sleep(for: .milliseconds(100)) }
             }
             guard self.session === s else { return }
             // Replaced in the meantime (a skip right after): the newer run goes to Roon, not this one.
