@@ -34,6 +34,18 @@ final class ArcoModel: ObservableObject {
         tracker.onChange = { [weak self] zones in self?.zonesChanged(zones) }
         connection.setStatus("Starting")
         connection.start()
+        #if DEBUG
+        // For tests from the command line (debug builds only): the distributed notification nl.renebouwmeester.arco.debug
+        // with object "on" or "off" works the switch.
+        DistributedNotificationCenter.default().addObserver(forName: .init("nl.renebouwmeester.arco.debug"), object: nil,
+                                                            queue: .main) { [weak self] note in
+            let on = (note.object as? String) == "on"
+            MainActor.assumeIsolated {
+                Log.note("debug: switch \(on ? "on" : "off") (zone \(self?.selectedZone?.name ?? "none"), \(String(describing: self?.connectionState)))")
+                self?.setSending(on)
+            }
+        }
+        #endif
     }
 
     var selectedZone: RoonZone? { zones.first { $0.id == selectedZoneID } }

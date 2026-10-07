@@ -3,15 +3,14 @@
 // On: the system output becomes Arco (the previous one is remembered, also across a crash), the loopback is read, and as
 // soon as Music plays a session begins on the zone. The current track becomes the first slice, in Roon's play slot.
 //
-// Runs (see SliceStore): tracks at the same rate run on in one stream, gapless; each track's title, artist, album and
-// cover go to Roon (update_track_info) when Roon's own position reaches it. Roon plays a few seconds behind:
-// - A natural transition (the current track within two seconds of its end): the run simply goes on; a mark.
-// - A skip (next, previous, another track or album, or more than two seconds left): a new run, into the play slot at once.
-// - A change of rate (the Music app sets the device to each track's own rate, with Lossless on): the run is frozen where
-//   the rate changed, and the new run goes into the play slot just as Roon reaches that point — nothing of the old run
-//   is lost, and the seam falls where Music itself paused to change the clock.
+// Through Roon's own queue (see SliceStore): as soon as Roon begins a slice, the next one goes into its queue slot — a
+// placeholder until Music begins the next track, then that track with its own length, rate, title, artist, album and
+// cover. Roon goes on to it by itself, gapless. Roon plays a few seconds behind:
+// - A natural transition (the current track within eight seconds of its end): the next track fills the queued slice.
+// - A skip (next, previous, another track or album, or more seconds left): a new slice, into the play slot at once.
+// - Roon ends a slice without going on (it opened its queue too late): the next one into the play slot then.
 //
-// Pause and resume work both ways: Music paused → the slices wait for sound at once, and Roon pauses when it lasts 0.6 s;
+// Pause and resume work both ways: Music paused → the slices wait for sound at once, and Roon pauses 0.2 s later;
 // Roon's pause or play button → Music. Events that Arco caused itself are ignored for a few seconds. Roon's next and
 // previous go to Music.
 //
@@ -58,11 +57,11 @@ final class Bridge: ObservableObject {
     private var store: SliceStore?
     private var zoneID: String?
     private var address: String?
-    /// The run Roon plays; where it is in it (from its Time events, about once a second) and since when.
+    /// The slice Roon plays; where it is in it (from its Time events, about once a second) and since when.
     private var roonSlice = 0
     private var roonTimeAt = Date.distantPast
-    /// Track starts inside runs, for Roon's track information when Roon gets there: (run, ms, info).
-    private var marks: [(number: Int, ms: Int, info: JSON)] = []
+    /// The slice in Roon's queue slot, and the information it was queued with.
+    private var queued: Int?
     /// Until when Roon's pause / play events are our own doing.
     private var ownUntil = Date.distantPast
     private var coverNumber = 0
@@ -188,7 +187,8 @@ final class Bridge: ObservableObject {
         pendingPause?.cancel(); pendingPause = nil
         roonPositionMs = 0
         roonSlice = 0
-        marks = []
+        queued = nil
+        queuedTrackKnown = []
         session?.end()
         session = nil
         capture.stop()
@@ -224,10 +224,10 @@ final class Bridge: ObservableObject {
         }
         session = s
         Log.note("session: began on the zone; slices at http://\(address):\(server.port)")
-        // The first run: the current track, from where the source is now.
+        // The first slice: the current track, from where the source is now.
         guard let track = source.track else { return }
         let left = max(1000, track.durationMs - Int(source.position() * 1000))
-        store.startTrack(.init(info: makeInfo(track), durationMs: left), newRun: true)
+        store.start(.init(info: makeInfo(track), durationMs: left))
         // No sound within five seconds: say so instead of waiting for nothing.
         try? await Task.sleep(for: .seconds(5))
         if session === s, phase == .starting, store.status == nil {
@@ -235,53 +235,91 @@ final class Bridge: ObservableObject {
         }
     }
 
-    /// A run began (its first sound arrived): into Roon's play slot — at once (the start, a skip), or just as Roon reaches
-    /// the point where the run before it was frozen (a change of rate).
+    /// A slice for the play slot began (its first sound arrived — the start, a skip, a cut): into Roon at once, with a
+    /// little of the music first so Roon's first read finds something.
     private func sliceStarted(_ slice: SliceStore.Slice) {
         guard let s = session, let address else { return }
         let url = "http://\(address):\(server.port)\(slice.path)"
         Task { @MainActor in
-            // Follows a run Roon never got (cut 0.2 s into a start, when the rate changed at once): nothing to wait for.
-            if let follows = slice.follows, self.roonSlice == follows.number {
-                // Wait until Roon is a quarter of a second before the point of the change (at most the time it still has
-                // to play there, plus some slack).
-                let deadline = Date().addingTimeInterval(Double(max(0, follows.atMs - self.roonPositionNow())) / 1000 + 15)
-                while Date() < deadline, self.session === s, self.roonSlice == follows.number,
-                      self.roonPositionNow() < follows.atMs - 250 {
-                    try? await Task.sleep(for: .milliseconds(50))
-                }
-                Log.note("run \(slice.number): Roon at \(self.roonPositionNow()) ms of run \(follows.number) (frozen at \(follows.atMs))")
-                // And the new run's own supply: the seam in Roon is then as long as Music's own pause to change the clock.
-                await self.waitForSupply()
-            } else {
-                // A little of the music first, so Roon's first read finds something.
-                for _ in 0..<30 where (self.store?.status?.writtenMs ?? 0) < 500 { try? await Task.sleep(for: .milliseconds(100)) }
-            }
+            for _ in 0..<30 where (self.store?.status?.writtenMs ?? 0) < 500 { try? await Task.sleep(for: .milliseconds(100)) }
             guard self.session === s else { return }
-            // Replaced in the meantime (a skip right after): the newer run goes to Roon, not this one.
-            guard self.store?.isCurrent(slice) == true else { Log.note("run \(slice.number) superseded before it reached Roon"); return }
-            // The run before it (frozen, or cut) goes now: its waiting downloader in Roon would hold the zone's bandwidth.
+            // Replaced in the meantime (a skip right after): the newer slice goes to Roon, not this one.
+            guard self.store?.isLive(slice.number) == true else { Log.note("slice \(slice.number) superseded before it reached Roon"); return }
+            // The slices before it go now: a waiting downloader in Roon would hold the zone's bandwidth.
             self.store?.forget(before: slice.number)
+            self.queued = nil
             self.ownUntil = Date().addingTimeInterval(3)
-            var answer = await s.play(track: String(slice.number), url: url, info: slice.info)
-            Log.note("play run \(slice.number): Roon answered \(answer)")
-            if answer == "Timeout", self.session === s, self.store?.isCurrent(slice) == true {
-                let fresh = url + "?n=\(Int(Date().timeIntervalSince1970 * 1000))"
-                answer = await s.play(track: String(slice.number), url: fresh, info: slice.info)
-                Log.note("play run \(slice.number) again: Roon answered \(answer)")
+            var answer = await s.play(track: String(slice.number), url: url, info: slice.track?.info ?? [:])
+            Log.note("play slice \(slice.number): Roon answered \(answer)")
+            if answer == "Timeout", self.session === s, self.store?.isLive(slice.number) == true {
+                answer = await s.play(track: String(slice.number), url: Self.fresh(url), info: slice.track?.info ?? [:])
+                Log.note("play slice \(slice.number) again: Roon answered \(answer)")
             }
             guard self.session === s else { return }
             if answer == "Playing" || answer == "Unpaused" {
-                self.roonSlice = slice.number
-                self.nowPlaying = Self.lines(slice.info)
-                self.roonPositionMs = 0; self.roonTimeAt = Date()
-                self.marks.removeAll { $0.number < slice.number }
+                self.roonBegan(slice.number)
                 if self.phase == .starting { self.phase = .playing; self.startHeartbeat() }
             } else if self.phase == .starting {
                 self.fail("Roon: \(answer)")
             }
         }
     }
+
+    /// Roon plays slice `n` now: show it, let the older ones go, and put the next one in Roon's queue — at once, so Roon
+    /// can open it in time (about eleven seconds before the end) and go on to it by itself.
+    private func roonBegan(_ n: Int) {
+        guard n >= roonSlice else { return }
+        let fresh = n != roonSlice
+        roonSlice = n
+        roonPositionMs = 0; roonTimeAt = Date()
+        if queued == n { queued = nil }
+        guard let slice = store?.slice(n) else { return }
+        if let info = slice.track?.info {
+            nowPlaying = Self.lines(info)
+            // Queued as a placeholder: Roon shows what it was queued with until told otherwise.
+            if fresh, !queuedWithTrackFor(n) { Task { await session?.updateInfo(track: String(n), info: info) } }
+        }
+        store?.forget(before: n)
+        queueNext(after: n)
+    }
+
+    private var queuedTrackKnown: Set<Int> = []
+    private func queuedWithTrackFor(_ n: Int) -> Bool { queuedTrackKnown.contains(n) }
+
+    /// The slice after `n` into Roon's queue slot (once).
+    private func queueNext(after n: Int) {
+        guard let s = session, let address, let next = store?.slice(after: n), queued != next.number else { return }
+        queued = next.number
+        let url = "http://\(address):\(server.port)\(next.path)"
+        // Not known yet: Roon gets the current track's information for now; the real one follows as soon as Music begins
+        // the next track (update_track_info), and again when Roon gets there.
+        let info = next.track?.info ?? store?.slice(n)?.track?.info ?? [:]
+        if next.track != nil { queuedTrackKnown.insert(next.number) }
+        Task { @MainActor in
+            let answer = await s.play(track: String(next.number), url: url, info: info, slot: "queue")
+            Log.note("queue slice \(next.number)\(next.track == nil ? " (not known yet)" : ""): Roon answered \(answer)")
+        }
+    }
+
+    /// Roon ended slice `n`. Normally it already went on to the queued one by itself (its "Playing" comes with the
+    /// end); if not — it opened its queue too late — the next slice goes into the play slot now, with a fresh address
+    /// (Roon's cache may hold a failed early fetch of it).
+    private func roonEnded(_ n: Int) {
+        guard n == roonSlice, let s = session, let address else { return }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(1000))
+            guard self.session === s, self.roonSlice == n, let next = self.store?.slice(n + 1), self.store?.isKnown(next.number) == true
+            else { return }
+            Log.note("roon: slice \(n) ended without going on — slice \(next.number) into the play slot")
+            self.ownUntil = Date().addingTimeInterval(3)
+            let url = Self.fresh("http://\(address):\(self.server.port)\(next.path)")
+            let answer = await s.play(track: String(next.number), url: url, info: next.track?.info ?? [:])
+            Log.note("play slice \(next.number): Roon answered \(answer)")
+            if answer == "Playing" || answer == "Unpaused" { self.roonBegan(next.number) }
+        }
+    }
+
+    private static func fresh(_ url: String) -> String { url + "?n=\(Int(Date().timeIntervalSince1970 * 1000))" }
 
     /// Where Roon is in its run now: its last Time event, plus the time since (while it plays).
     private func roonPositionNow() -> Int {
@@ -326,22 +364,16 @@ final class Bridge: ObservableObject {
         func current(_ track: String) -> Bool { Int(track) ?? 0 >= roonSlice }
         switch event {
         case .playing(let track):
+            // Roon went on to the queued slice by itself (OnToNext), or began one it was given.
             guard let n = Int(track), n >= roonSlice else { return }
-            if n > roonSlice { roonSlice = n; roonPositionMs = 0; roonTimeAt = Date() }
+            if n > roonSlice { Log.note("roon: on to slice \(n)") }
+            roonBegan(n)
         case .time(let track, let ms):
             guard let n = Int(track), n >= roonSlice else { return }
-            roonSlice = n
+            if n > roonSlice { roonBegan(n) }
             roonPositionMs = ms; roonTimeAt = Date()
-            // Roon reached the start of the next track in its run: now it shows it.
-            while let i = marks.firstIndex(where: { $0.number == n && $0.ms <= ms + 300 }) {
-                let mark = marks.remove(at: i)
-                nowPlaying = Self.lines(mark.info)
-                Log.note("roon reached \(mark.ms) ms of run \(n): track information updated")
-                Task { await session?.updateInfo(track: track, info: mark.info) }
-            }
-        case .ended:
-            // A run only ends at three hours, and is followed by then (frozen); nothing to do.
-            break
+        case .ended(let track):
+            if let n = Int(track) { roonEnded(n) }
         case .paused(let track):
             guard current(track) else { return }
             if !own { ownUntil = Date().addingTimeInterval(3); source.pause() }
@@ -357,7 +389,7 @@ final class Bridge: ObservableObject {
         case .failed(let track, let reason):
             // Only an error of the slice being written counts: a slice dropped at a skip answers a 404 to Roon's last
             // fetches, and Roon may report that as a MediaError before the new slice's play arrives.
-            guard Int(track) == roonSlice, Int(track) == store?.status?.number, phase != .starting else { return }
+            guard let n = Int(track), n == roonSlice, store?.isLive(n) == true, phase != .starting else { return }
             fail("Roon: \(reason)")
         case .cleared:
             // A slice replaced by a new play (a skip, a cut at a change of rate): Roon confirms it took it out.
@@ -397,19 +429,33 @@ final class Bridge: ObservableObject {
             if state == .playing { Task { await startSession() } }
         case .playing, .paused, .starting:
             if changed, let track, let store {
-                // Within eight seconds of its end: the natural next track, going on in the run. Further from it: a skip.
-                // Eight, not two: what is left of the first track of a session is estimated from Music's position at the
-                // start, and that was 6 s off (21:27:53, "The End"). Taking a natural transition for a skip would drop the
-                // run, and Roon would lose the end of the track; a skip in the last seconds is merely heard a little later.
-                let left = store.remainingInTrack ?? 0
-                let natural = left < 8
+                // Within eight seconds of the end of the slice being written: the natural next track — it fills the
+                // queued slice. Further from it: a skip. Eight, not two: what is left of the first track of a session is
+                // estimated from Music's position at the start, and that was 6 s off (21:27:53, "The End").
+                let left = store.remainingInTrack
                 let info = makeInfo(track)
-                if let mark = store.startTrack(.init(info: info, durationMs: track.durationMs), newRun: !natural) {
-                    marks.append((mark.number, mark.ms, info))
-                    Log.note("next track: \(track.title) — goes on in run \(mark.number) at \(mark.ms) ms (\(String(format: "%.1f", left)) s were left)")
-                } else {
-                    Log.note("next track: \(track.title) — \(natural ? "begins the next run" : "a skip, a new run at once") (\(String(format: "%.1f", left)) s were left)")
+                let leftText = left.map { String(format: "%.1f s left", $0) } ?? "in the next slice"
+                switch store.trackChanged(.init(info: info, durationMs: track.durationMs)) {
+                case .next(let slice):
+                    Log.note("next track: \(track.title) — slice \(slice.number) (\(leftText))")
+                    if queued == slice.number, !queuedTrackKnown.contains(slice.number) {
+                        queuedTrackKnown.insert(slice.number)
+                        Task { [weak self] in
+                            let answer = await self?.session?.updateInfo(track: String(slice.number), info: info)
+                            Log.note("queued slice \(slice.number): information sent — Roon answered \(answer ?? "-")")
+                        }
+                    }
+                case .skip:
+                    Log.note("next track: \(track.title) — a skip, a new slice at once (\(leftText))")
+                    queued = nil
+                    store.start(.init(info: info, durationMs: track.durationMs))
                 }
+            }
+            if state == .stopped, phase == .playing {
+                // The end of an album or a playlist: Roon plays out what it has, nothing comes after it.
+                store?.endOfMusic()
+                Log.note("source stopped — Roon plays out what it has")
+                return
             }
             if state != .playing, phase == .playing {
                 // The run closes at once — whatever silence Music leaves is not written. Roon pauses 0.2 s later, unless
@@ -450,20 +496,7 @@ final class Bridge: ObservableObject {
         }
     }
 
-    /// Roon's supply: how far the stream is ahead of Roon. Roon plays a few seconds behind, and those seconds are what
-    /// keeps it fed; at the edge of the stream it starves (it counts on, without sound).
-    private static let supplyMs = 5000
     private var rateChangedAt = Date.distantPast
-
-    /// Waits (at most eight seconds) until the stream is `supplyMs` ahead of where Roon is in the current run.
-    private func waitForSupply() async {
-        let until = Date().addingTimeInterval(8)
-        while Date() < until, let status = store?.status {
-            let roonAt = roonSlice == status.number ? roonPositionMs : 0
-            if status.writtenMs - roonAt >= Self.supplyMs - 300 { return }
-            try? await Task.sleep(for: .milliseconds(50))
-        }
-    }
 
     /// Another app plays: it becomes the source. The first one pauses (Arco's own doing), the device gets the new source's
     /// rate, and its track begins a new run at once.
@@ -479,7 +512,7 @@ final class Bridge: ObservableObject {
         case .waitingForMusic:
             Task { await startSession() }
         case .playing, .paused, .starting:
-            if let track = s.track { store?.startTrack(.init(info: makeInfo(track), durationMs: track.durationMs), newRun: true) }
+            if let track = s.track { queued = nil; store?.start(.init(info: makeInfo(track), durationMs: track.durationMs)) }
             if phase == .paused { roonControl("play"); phase = .playing }
         default:
             break
