@@ -33,8 +33,13 @@ final class SliceStore: @unchecked Sendable {
     final class Slice {
         let number: Int
         let path: String
-        let rate: Double
-        let frames: Int
+        /// Set by its first sound; converted in place if the Music app switches the rate before Roon has the header.
+        var rate: Double
+        var frames: Int
+        /// Roon has the header (rate, length): from now on a change of rate means a new run.
+        var headerSent = false
+        /// Where the current rate began (a frame of this run): the run goes to Roon once the rate has held a while.
+        var rateSince = 0
         /// The track it begins with.
         let info: [String: Any]
         /// Set when this run follows another one at a change of rate: that run's number and where it was frozen (ms).
@@ -55,6 +60,9 @@ final class SliceStore: @unchecked Sendable {
             reader = try? FileHandle(forReadingFrom: file)
         }
         var isFull: Bool { written >= frames }
+        /// The rate has held `seconds` (the Music app switches the device to a track's own rate 0.2–5.5 s after a start;
+        /// 7 Oct 21:53: four seconds).
+        func settled(_ seconds: Double) -> Bool { Double(written - rateSince) >= seconds * rate }
         var bytes: Int { frames * SliceStore.bytesPerFrame }
         func ms(_ frame: Int) -> Int { Int(Double(frame) / rate * 1000) }
     }
@@ -98,6 +106,15 @@ final class SliceStore: @unchecked Sendable {
 
     // MARK: - From the bridge (main)
 
+    /// How many frames a run can hold at `rate`: three hours, or as long as a WAV can be (its length is a 32-bit field —
+    /// about an hour at 192 kHz).
+    static func capacity(_ rate: Double) -> Int {
+        min(Int(runHours * 3600 * rate), (Int(UInt32.max) - 36) / bytesPerFrame)
+    }
+
+    /// Whether the run's rate has held `seconds` (see Slice.settled).
+    func isSettled(_ s: Slice, seconds: Double) -> Bool { lock.lock(); defer { lock.unlock() }; return s.settled(seconds) }
+
     /// A new track. `newRun`: a skip or the first track — a new run with the next sound. Otherwise it goes on in the
     /// current run, and the answer is where (run number, ms) — for the bridge to update Roon's track information there.
     @discardableResult
@@ -105,8 +122,18 @@ final class SliceStore: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         track = t
         if !newRun, let c = current, !c.closed {
-            trackStart = c.written
-            return (c.number, c.ms(c.written))
+            // Room for this track in the run? If not (an hour at 192 kHz), the next run begins here, between two tracks —
+            // the way a change of rate does — instead of in the middle of a track when the run is full.
+            let needed = Int(Double(t.durationMs) / 1000 * c.rate) + Int(5 * c.rate)
+            if c.frames - c.written >= needed {
+                trackStart = c.written
+                return (c.number, c.ms(c.written))
+            }
+            c.closed = true
+            current = nil
+            pendingRun = (t, (c.number, c.ms(c.written)))
+            Log.note("runs: \(c.number) frozen at \(c.ms(c.written)) ms — the next track doesn't fit in it")
+            return nil
         }
         if newRun, let c = current { drop(c); current = nil; overflow = Data() }
         // A skip begins a run of its own, at once. Otherwise a run is about to begin (right after a change of rate): it
@@ -232,6 +259,25 @@ final class SliceStore: @unchecked Sendable {
         }
         while count > 0 {
             if let c = current, !c.closed {
+                if c.rate != rate, !c.headerSent {
+                    // The start of a track at the device's old rate: Roon hasn't seen this run's header, so what was
+                    // written is converted to the new rate and the run goes on — the start of the track stays.
+                    let old = c.rate
+                    var converted = Data()
+                    if c.written > 0, let r = c.reader {
+                        try? r.seek(toOffset: 0)
+                        converted = Resample.pcm24((try? r.readToEnd()) ?? Data(), from: old, to: rate)
+                    }
+                    try? c.writer?.truncate(atOffset: 0); try? c.writer?.seekToEnd()
+                    if !converted.isEmpty { try? c.writer?.write(contentsOf: converted) }
+                    trackStart = Int(Double(trackStart) * rate / old)
+                    c.rate = rate
+                    c.written = converted.count / Self.bytesPerFrame
+                    c.rateSince = c.written
+                    c.frames = Self.capacity(rate)
+                    Log.note("runs: \(c.number) — rate \(Int(old)) → \(Int(rate)) before Roon had it: \(c.ms(c.written)) ms converted, it goes on")
+                    continue
+                }
                 if c.rate != rate || c.isFull {
                     // A change of rate (or three hours at one rate): freeze the run where it is — Roon still plays its
                     // end — and go on in a new run at the new rate, with the track that plays now.
@@ -270,9 +316,8 @@ final class SliceStore: @unchecked Sendable {
         // As long as a WAV can be: its length is a 32-bit field. Three hours fit at 44.1 and 48 kHz; at 96 kHz they would
         // be 6.2 GB — the header overflowed and Arco crashed (21:32:25). So about two hours at 96, one at 192; a full run
         // simply goes on in the next one.
-        let maxFrames = (Int(UInt32.max) - 36) / Self.bytesPerFrame
         let s = Slice(number: counter, path: "/stream/\(session)-\(counter).wav", rate: rate,
-                      frames: min(Int(Self.runHours * 3600 * rate), maxFrames), info: p.track.info, follows: p.follows, directory: directory)
+                      frames: Self.capacity(rate), info: p.track.info, follows: p.follows, directory: directory)
         slices[s.number] = s
         current = s
         track = p.track
@@ -328,6 +373,7 @@ final class SliceStore: @unchecked Sendable {
         var head = Data(http.utf8)
         if headOnly { connection.send(content: head, completion: .contentProcessed { _ in connection.cancel() }); return true }
         if from < 44 { head.append(Self.wavHeader(rate: s.rate, frames: s.frames).dropFirst(from)) }
+        s.headerSent = true
         let r = Reader(connection: connection, offset: max(0, from - 44))
         let host = Self.host(connection)
         for old in s.readers where host != nil && Self.host(old.connection) == host { old.connection.cancel() }
