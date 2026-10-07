@@ -406,6 +406,9 @@ final class Bridge: ObservableObject {
                 let left = store.remainingInTrack ?? 0
                 let natural = left < 8
                 let info = makeInfo(track)
+                // No length in Music's notification (a streamed track, 7 Oct 22:06: the Aria counted as one second, and
+                // the next "next" looked like a natural end): ask Music once more when it has loaded the track.
+                if track.durationMs <= 0 { refreshLength(of: track.id) }
                 if let mark = store.startTrack(.init(info: info, durationMs: track.durationMs), newRun: !natural) {
                     marks.append((mark.number, mark.ms, info))
                     Log.note("next track: \(track.title) — goes on in run \(mark.number) at \(mark.ms) ms (\(String(format: "%.1f", left)) s were left)")
@@ -485,6 +488,19 @@ final class Bridge: ObservableObject {
             if phase == .paused { roonControl("play"); phase = .playing }
         default:
             break
+        }
+    }
+
+    /// The real length of the track that plays now, from the source a moment later.
+    private func refreshLength(of id: String) {
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(1500))
+            guard let self, self.source.track?.id == id else { return }
+            self.source.refresh()
+            guard let t = self.source.track, t.id == id, t.durationMs > 0 else { return }
+            let left = t.durationMs - Int(self.source.position() * 1000)
+            self.store?.setRemaining(ms: left)
+            Log.note("length: \(t.title) — \(t.durationMs / 1000) s, \(left / 1000) s left")
         }
     }
 

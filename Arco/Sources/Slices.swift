@@ -143,6 +143,15 @@ final class SliceStore: @unchecked Sendable {
         return nil
     }
 
+    /// The current track's real length came late (the Music app's notification of a streamed track can come without it):
+    /// what is left of it, from the source's own duration and position.
+    func setRemaining(ms: Int) {
+        lock.lock(); defer { lock.unlock() }
+        guard let c = current, let t = track else { return }
+        let done = Int(Double(c.written - trackStart) / c.rate * 1000)
+        track = Track(info: t.info, durationMs: done + max(0, ms))
+    }
+
     /// How much of the current track is left in the run, in seconds (a natural end is near when this is small).
     var remainingInTrack: Double? {
         lock.lock(); defer { lock.unlock() }
@@ -187,6 +196,7 @@ final class SliceStore: @unchecked Sendable {
     /// (Roon plays seconds behind anyway.)
     private static let holdBackSeconds = 0.4
     private static let fadeSeconds = 0.08
+    private static let keepSeconds = 0.12
 
     /// Under the lock: the run's tail of silence, and Music's fade before it, taken out — as far as it is still held back.
     private func trimTail(_ c: Slice) {
@@ -196,6 +206,10 @@ final class SliceStore: @unchecked Sendable {
         while end > floor, isSilent(c, frame: end - 1) { end -= 1 }
         let silence = c.written - end
         end = max(floor, end - Int(Self.fadeSeconds * c.rate))
+        // A little silence stays above what Roon has read: the drip after Roon's pause needs bytes to wake its reader
+        // (7 Oct 22:08: the whole held-back part was silence and went — nothing to drip, and the KEF played on until Roon
+        // let it go five seconds later). It costs 0.12 s of silence when the music goes on.
+        end = max(end, min(c.written, floor + Int(Self.keepSeconds * c.rate)))
         guard end < c.written else { return }
         let removed = c.written - end
         try? c.writer?.truncate(atOffset: UInt64(end * Self.bytesPerFrame))
