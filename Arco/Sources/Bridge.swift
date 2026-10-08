@@ -519,7 +519,10 @@ final class Bridge: ObservableObject {
             await self.setClock(read.rate, for: track, how: read.how, fromStart: true)
             // One more reading five seconds later: a late correction from the Music app.
             try? await Task.sleep(for: .seconds(5))
-            guard current(), let r = self.music.sampleRate(), r > 0, Int(r) != read.rate else { return }
+            guard current(), let r = self.music.sampleRate(), r > 0 else { return }
+            // Always in the log (0.3.1): a tester's "96 kHz" track stayed at 44.1 — what the Music app says later settles it.
+            Log.note("clock: \(track.title) — five seconds in, the Music app says \(Int(r)) Hz")
+            guard Int(r) != read.rate else { return }
             self.clock.remember(Int(r), for: track)
             await self.setClock(Int(r), for: track, how: "the Music app, five seconds in", fromStart: false)
         }
