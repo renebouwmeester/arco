@@ -70,7 +70,7 @@ Extensions* as well.
 
 ## Problems and ideas
 
-- Arco keeps a log at `~/Library/Logs/Arco/arco.log`; it helps a lot with a bug report. It contains track titles and
+- Arco keeps a log — **Show Log** in the menu opens it in Finder (`~/Library/Logs/Arco/arco.log`); it helps a lot with a bug report. It contains track titles and
   local network addresses — look it over before you share it.
 - [Report a problem or suggest something](https://github.com/renebouwmeester/arco/issues/new/choose), or ask in
   [Discussions](https://github.com/renebouwmeester/arco/discussions).

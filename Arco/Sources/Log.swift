@@ -1,5 +1,6 @@
 // Arco's own log, for "what happened?": ~/Library/Logs/Arco/arco.log, one line per event, at most about a megabyte
 // (then it starts over, keeping the previous file as arco.log.1). No tokens, no addresses beyond the local network.
+import AppKit
 import Foundation
 
 enum Log {
@@ -12,6 +13,15 @@ enum Log {
     private static let formatter: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"; return f
     }()
+
+    /// Finder with the log selected (or its folder, before anything was written).
+    @MainActor static func reveal() {
+        if FileManager.default.fileExists(atPath: file.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([file])
+        } else {
+            NSWorkspace.shared.open(file.deletingLastPathComponent())
+        }
+    }
 
     static func note(_ message: String) {
         let line = "\(formatter.string(from: Date())) \(message)\n"

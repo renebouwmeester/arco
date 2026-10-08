@@ -43,6 +43,6 @@ body:
     attributes:
       label: Arco's log
       description: >-
-        The lines around the moment it happened, from ~/Library/Logs/Arco/arco.log. It contains track titles and local
+        The lines around the moment it happened — Show Log in Arco's menu opens the file in Finder. It contains track titles and local
         network addresses — remove what you'd rather not share.
       render: text

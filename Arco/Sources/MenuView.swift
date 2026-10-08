@@ -46,6 +46,11 @@ struct MenuView: View {
                     .buttonStyle(.borderless)
                     .foregroundStyle(.secondary)
                 Spacer()
+                // The log in Finder, selected — ~/Library is hidden, and a bug report wants the file (René, 8 Oct).
+                Button("Show Log") { Log.reveal() }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                    .padding(.trailing, 10)
                 Button("Quit Arco") { NSApplication.shared.terminate(nil) }
                     .buttonStyle(.borderless)
                     .keyboardShortcut("q")
