@@ -247,7 +247,7 @@ final class Bridge: ObservableObject {
         let s = AudioInputSession(connection: connection, zoneID: zoneID)
         s.onEvent = { [weak self] event in self?.roonEvent(event) }
         // ?v=: Roon keeps a source's icon by its URL — bump it when the icon changes
-        guard await s.begin(displayName: "Arco", iconURL: "http://\(address):\(server.port)/icon.png?v=4") else {
+        guard await s.begin(displayName: "Arco", iconURL: "http://\(address):\(server.port)/icon.png?v=5") else {
             return fail("Roon didn't start a session on this zone")
         }
         session = s
