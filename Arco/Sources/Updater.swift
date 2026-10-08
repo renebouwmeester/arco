@@ -5,13 +5,57 @@ import AppKit
 import Sparkle
 
 @MainActor
-final class Updater {
-    private let controller: SPUStandardUpdaterController?
+final class Updater: NSObject, SPUStandardUserDriverDelegate {
+    private var controller: SPUStandardUpdaterController?
 
-    init() {
+    override init() {
+        super.init()
         let key = Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") as? String ?? ""
         controller = key.isEmpty ? nil
-            : SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+            : SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: self)
+    }
+
+    // During an update Arco is an ordinary app, with a Dock icon (Sparkle's advice for menu bar apps): after the Touch ID or
+    // password question macOS gives the focus back to the app that was in front, and a menu bar app's update window was
+    // then hard to find again (René, 8 Oct). Back to the menu bar when the update session ends.
+    nonisolated func standardUserDriverWillHandleShowingUpdate(_ handleShowingUpdate: Bool, forUpdate update: SUAppcastItem,
+                                                               state: SPUUserUpdateState) {
+        MainActor.assumeIsolated {
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+            watchForAuthorization()
+        }
+    }
+
+    nonisolated func standardUserDriverWillFinishUpdateSession() {
+        MainActor.assumeIsolated {
+            authorizationWatch?.invalidate(); authorizationWatch = nil
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
+
+    /// The Touch ID / password question is another process; when it goes, macOS activates the app that was in front
+    /// before. Seen it come and go, with Arco not in front: Arco comes back once, with its update window.
+    private var authorizationWatch: Timer?
+    private func watchForAuthorization() {
+        authorizationWatch?.invalidate()
+        var sawQuestion = false
+        let started = Date()
+        authorizationWatch = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] timer in
+            MainActor.assumeIsolated {
+                let front = NSWorkspace.shared.frontmostApplication
+                let id = front?.bundleIdentifier ?? ""
+                let asking = id == "com.apple.SecurityAgent" || id.hasPrefix("com.apple.LocalAuthentication")
+                    || id == "com.apple.coreautha" || (front?.localizedName ?? "").contains("SecurityAgent")
+                if asking { sawQuestion = true; return }
+                if sawQuestion, front?.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+                    NSApp.activate(ignoringOtherApps: true)
+                    timer.invalidate(); self?.authorizationWatch = nil
+                } else if Date().timeIntervalSince(started) > 600 {
+                    timer.invalidate(); self?.authorizationWatch = nil
+                }
+            }
+        }
     }
 
     var available: Bool { controller != nil }
