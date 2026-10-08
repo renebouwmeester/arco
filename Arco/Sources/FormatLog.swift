@@ -13,7 +13,7 @@
 // for a track that began at 17:30:47). And it writes one only when it sets up a new queue — a new format (or a skip): a next
 // track at the same rate goes on in the same queue, without a line (18:12:08, 100 Lovers after a 96 kHz track). So:
 // - a natural change of track: the last format loaded since the previous change; none — the same format as before;
-// - a skip: the first line within 1.2 s after it; none — the same format;
+// - a skip: the first lossless line within 2.5 s after it; none — AppleScript (not "the same": see below);
 // - the start of a session: the last line since Arco was switched on (the Music app sets up a queue for the new output).
 // "None means the same" only once the log has shown it works on this Mac (a line seen); until then, AppleScript.
 //
@@ -22,6 +22,9 @@
 // A clock set on that AAC line was wrong, and the Music app then stayed at 48. So only lossless lines count ('qlac', 'alac',
 // 'lpcm'); a skip or a start waits up to 2.5 s for one; and a lossless line that comes later anyway (up to 20 s after the
 // change) corrects the clock (Bridge).
+// After a skip, no line is not "the same format" (8 Oct, Moon River after a 96 kHz track): the Music app started it in AAC
+// and set up 44.1 lossless only 13 s later; "the same" kept 96 over AppleScript's right 44.1, and the late line cut the
+// stream. So a skip without a line asks AppleScript; the late lossless line still corrects it.
 // Lines in the seconds after a resume or after Arco's own change of clock are about the track that already plays.
 import Foundation
 
@@ -137,7 +140,7 @@ final class FormatLog {
                 }
                 try? await Task.sleep(for: .milliseconds(100))
             }
-            return seenAny ? same : nil
+            return nil   // not "the same": a skipped-to track can start in AAC and get its lossless queue only later
         }
     }
 }
