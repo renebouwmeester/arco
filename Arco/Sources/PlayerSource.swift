@@ -32,8 +32,7 @@ protocol PlayerSource: AnyObject {
     var track: SourceTrack? { get }
     /// (new state, track, whether the track changed)
     var onChange: ((SourceState, SourceTrack?, Bool) -> Void)? { get set }
-    /// The rate the Arco device should have for this source; nil when the source sets it itself (the Music app does, per
-    /// track, with Lossless on).
+    /// The rate the Arco device should have for this source; nil when it follows each track (the Music app: TrackClock).
     var preferredRate: Double? { get }
     /// The current state, asked once (later the app's notifications keep it current).
     func refresh()

@@ -10,7 +10,7 @@ final class MusicWatcher: PlayerSource {
     private(set) var state: SourceState = .stopped
     private(set) var track: SourceTrack?
     var onChange: ((SourceState, SourceTrack?, Bool) -> Void)?
-    /// With Lossless on, Music sets the device to each track's own rate itself.
+    /// None: the rate follows each track (TrackClock) — the Music app itself never changes it.
     let preferredRate: Double? = nil
     private var observer: NSObjectProtocol?
 
@@ -76,6 +76,14 @@ final class MusicWatcher: PlayerSource {
         guard data.count > 8 else { return nil }
         return .data(data, type: data.starts(with: [0x89, 0x50, 0x4E, 0x47]) ? "image/png" : "image/jpeg")
     }
+
+    /// The current track's own sample rate, as the Music app names it (0 or nothing until it knows).
+    func sampleRate() -> Double? {
+        guard Self.isRunning, let text = AppleScript.run(#"tell application "Music" to get sample rate of current track"#)?.stringValue else { return nil }
+        return Double(text.replacingOccurrences(of: ",", with: "."))
+    }
+
+    func seekToStart() { AppleScript.run(#"tell application "Music" to set player position to 0"#) }
 
     func play() { AppleScript.run(#"tell application "Music" to play"#) }
     func pause() { AppleScript.run(#"tell application "Music" to pause"#) }

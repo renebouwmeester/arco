@@ -121,6 +121,7 @@ final class SliceStore: @unchecked Sendable {
     func startTrack(_ t: Track, newRun: Bool) -> (number: Int, ms: Int)? {
         lock.lock(); defer { lock.unlock() }
         track = t
+        restartAtTrackStart = false   // a restart belongs to the track it was asked for
         if !newRun, let c = current, !c.closed {
             // Room for this track in the run? If not (an hour at 192 kHz), the next run begins here, between two tracks —
             // the way a change of rate does — instead of in the middle of a track when the run is full.
@@ -177,6 +178,14 @@ final class SliceStore: @unchecked Sendable {
             gate = .waitForSilence
         }
     }
+
+    /// The bridge changes the rate and sends the Music app back to the start of the track (TrackClock, 0.3.0): what was
+    /// written of that track isn't kept — the run is frozen (or cut back) where the track began, and the track begins
+    /// again at the new rate. It holds until the music comes back after the Music app's pause: that pause can come a second
+    /// after the change of rate (12:57:01, Almost There), and what Music played in between went into the new run — the
+    /// start of the track would have been heard twice. So at that next sound the run is cut back to the track's start too.
+    private var restartAtTrackStart = false
+    func restartTrackAtNewRate() { lock.lock(); restartAtTrackStart = true; lock.unlock() }
 
     /// Released from the held-back part after a pause (see `release`); back to nothing when the music goes on.
     private var released = 0
@@ -268,6 +277,14 @@ final class SliceStore: @unchecked Sendable {
             gate = .writing
             released = 0
             Log.note("runs: sound — writing")
+            // Back from the clock's pause, at the start of the track (see restartAtTrackStart): cut the run back to it.
+            if restartAtTrackStart, let c = current, !c.closed, !c.headerSent, c.written > trackStart {
+                Log.note("runs: \(c.number) — the track starts over: \(c.ms(c.written - trackStart)) ms played before the pause taken out")
+                try? c.writer?.truncate(atOffset: UInt64(trackStart * Self.bytesPerFrame))
+                c.written = trackStart
+                c.rateSince = min(c.rateSince, trackStart)
+            }
+            restartAtTrackStart = false
             data = pcm.subdata(in: (first * Self.bytesPerFrame)..<pcm.count)
             count = frames - first
         }
@@ -275,12 +292,14 @@ final class SliceStore: @unchecked Sendable {
             if let c = current, !c.closed {
                 if c.rate != rate, !c.headerSent {
                     // The start of a track at the device's old rate: Roon hasn't seen this run's header, so what was
-                    // written is converted to the new rate and the run goes on — the start of the track stays.
+                    // written is converted to the new rate and the run goes on — the start of the track stays. When the
+                    // Music app went back to the start (restartAtTrackStart), only what came before the track is kept.
                     let old = c.rate
+                    let keep = restartAtTrackStart ? trackStart : c.written
                     var converted = Data()
-                    if c.written > 0, let r = c.reader {
+                    if keep > 0, let r = c.reader {
                         try? r.seek(toOffset: 0)
-                        converted = Resample.pcm24((try? r.readToEnd()) ?? Data(), from: old, to: rate)
+                        converted = Resample.pcm24((try? r.read(upToCount: keep * Self.bytesPerFrame)) ?? Data(), from: old, to: rate)
                     }
                     try? c.writer?.truncate(atOffset: 0); try? c.writer?.seekToEnd()
                     if !converted.isEmpty { try? c.writer?.write(contentsOf: converted) }
@@ -297,9 +316,12 @@ final class SliceStore: @unchecked Sendable {
                     // end — and go on in a new run at the new rate, with the track that plays now.
                     c.closed = true
                     current = nil
-                    let left = max(1000, Int((remainingInTrackLocked() ?? 0) * 1000))
-                    if let t = track { pendingRun = (Track(info: t.info, durationMs: left), (c.number, c.ms(c.written))) }
-                    Log.note("runs: \(c.number) frozen at \(c.ms(c.written)) ms (\(c.rate != rate ? "rate \(Int(c.rate)) → \(Int(rate))" : "three hours"))")
+                    // Back to the start of the track (TrackClock): the next run takes over where the track began.
+                    let fromStart = restartAtTrackStart && c.rate != rate
+                    let at = fromStart ? trackStart : c.written
+                    let left = fromStart ? (track?.durationMs ?? 1000) : max(1000, Int((remainingInTrackLocked() ?? 0) * 1000))
+                    if let t = track { pendingRun = (Track(info: t.info, durationMs: left), (c.number, c.ms(at))) }
+                    Log.note("runs: \(c.number) frozen at \(c.ms(at)) ms (\(c.rate != rate ? "rate \(Int(c.rate)) → \(Int(rate))" : "three hours")\(fromStart ? ", the track starts over" : ""))")
                     continue
                 }
                 let n = min(count, c.frames - c.written)

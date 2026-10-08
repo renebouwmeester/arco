@@ -99,6 +99,24 @@ enum AudioDevices {
         AudioObjectRemovePropertyListenerBlock(device, &address, DispatchQueue.main, block)
     }
 
+    /// The rates the device offers (each range's own value; the Arco driver offers single rates).
+    static func availableRates(of device: AudioDeviceID) -> [Double] {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyAvailableNominalSampleRates,
+                                                 mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(device, &address, 0, nil, &size) == noErr, size > 0 else { return [] }
+        var ranges = [AudioValueRange](repeating: AudioValueRange(), count: Int(size) / MemoryLayout<AudioValueRange>.size)
+        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &ranges) == noErr else { return [] }
+        return ranges.map(\.mMaximum).sorted()
+    }
+
+    /// The rate to use for `wish`: itself when offered, else the highest offered below it, else the lowest offered.
+    static func bestRate(_ wish: Double, of device: AudioDeviceID) -> Double {
+        let rates = availableRates(of: device)
+        guard !rates.isEmpty, !rates.contains(wish) else { return wish }
+        return rates.last { $0 < wish } ?? rates[0]
+    }
+
     @discardableResult
     static func setSampleRate(_ rate: Double, of device: AudioDeviceID) -> Bool {
         var value = Float64(rate)
