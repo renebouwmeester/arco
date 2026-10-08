@@ -17,15 +17,15 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.1</string>
+	<string>0.1.2</string>
 	<key>CFBundleVersion</key>
-	<string>2</string>
+	<string>3</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>Arco reads what the Music app and Spotify play (title, artist, album, cover) and passes Roon's play, pause and skip buttons on to them.</string>
+	<string>Arco reads what the Music app plays (title, artist, album, cover) and passes Roon's play, pause and skip buttons on to them.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 René Bouwmeester · Apache License 2.0</string>
 	<key>NSLocalNetworkUsageDescription</key>
