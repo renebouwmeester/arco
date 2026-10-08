@@ -363,6 +363,15 @@ final class Bridge: ObservableObject {
             // Only an error of the slice being written counts: a slice dropped at a skip answers a 404 to Roon's last
             // fetches, and Roon may report that as a MediaError before the new slice's play arrives.
             guard Int(track) == roonSlice, Int(track) == store?.status?.number, phase != .starting else { return }
+            // Once more first (7 Oct 22:15: the Ellipse on wifi stopped with an error and Arco switched off): a new run
+            // from where the source is. A second error within half a minute switches off.
+            if Date().timeIntervalSince(lastRetry) > 30, let t = source.track, let store {
+                lastRetry = Date()
+                let left = max(1000, t.durationMs - Int(source.position() * 1000))
+                Log.note("roon: \(reason) — once more, a new run")
+                store.startTrack(.init(info: makeInfo(t), durationMs: left), newRun: true)
+                return
+            }
             fail("Roon: \(reason)")
         case .cleared:
             // A slice replaced by a new play (a skip, a cut at a change of rate): Roon confirms it took it out.
@@ -476,6 +485,8 @@ final class Bridge: ObservableObject {
     /// keeps it fed; at the edge of the stream it starves (it counts on, without sound).
     private static let supplyMs = 5000
     private var rateChangedAt = Date.distantPast
+    /// The last time a Roon error got a second try.
+    private var lastRetry = Date.distantPast
 
     /// Waits (at most eight seconds) until the stream is `supplyMs` ahead of where Roon is in the current run.
     private func waitForSupply() async {
