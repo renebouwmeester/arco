@@ -96,7 +96,7 @@ final class StreamServer: @unchecked Sendable {
         connection.send(content: out, completion: .contentProcessed { _ in connection.cancel() })
     }
 
-    /// Arco's icon for the session in Roon: the white glyph that fills its square (RoonIcon, see Design/make-icons.swift);
+    /// Arco's icon for the session in Roon: the rose glyph that fills its square (RoonIcon, see Design/make-icons.swift);
     /// the app icon only as a fallback — Roon draws it as a speck.
     private func iconPNG() -> Data {
         lock.lock(); if let icon { lock.unlock(); return icon }; lock.unlock()

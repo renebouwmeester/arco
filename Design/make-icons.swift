@@ -81,18 +81,18 @@ func menuGlyph(to url: URL) {
     ctx.endPDFPage(); ctx.closePDF()
 }
 
-/// The icon Roon shows for Arco's source (the signal path, the zone): white on clear, filling the square — Roon draws
-/// source icons small inside its own circle, so a tile with a margin (the app icon) shrinks to a speck. The menu bar's
-/// bold strokes, centred on the drawing's box (x 39…131, y 29…131 with the strokes) at 95% of the square.
+/// The icon Roon shows for Arco's source (the signal path, the zone): Basso's rose on clear, edge to edge — Roon draws
+/// source icons small inside its own circle, so a tile with a margin (the app icon) shrinks to a speck. Rose, not white:
+/// one image serves Roon's light and dark mode alike, and white vanished in light mode. The menu bar's bold strokes,
+/// centred on the drawing's box (x 39…131, y 29…131 with the strokes), filling the square.
 func roonIcon(_ size: Int) -> CGImage {
     let ctx = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8, bytesPerRow: 0,
                         space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
     ctx.translateBy(x: 0, y: CGFloat(size)); ctx.scaleBy(x: 1, y: -1)
-    let s = 0.95 * CGFloat(size) / 102
+    let s = CGFloat(size) / 102
     ctx.translateBy(x: CGFloat(size) / 2 - 85 * s, y: CGFloat(size) / 2 - 80 * s); ctx.scaleBy(x: s, y: s)
-    let white = rgb(0xFFFFFF)
-    draw([Stroke(path: hair, width: 6, color: white), Stroke(path: stick, width: 10, color: white)]
-         + waves.map { Stroke(path: $0, width: 10, color: white) }, in: ctx)
+    draw([Stroke(path: hair, width: 6, color: rose), Stroke(path: stick, width: 10, color: rose)]
+         + waves.map { Stroke(path: $0, width: 10, color: rose) }, in: ctx)
     return ctx.makeImage()!
 }
 
