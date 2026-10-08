@@ -206,7 +206,10 @@ final class SliceStore: @unchecked Sendable {
             c.written = from
         }
         guard c.written >= Splice.tailFrames, let r = c.reader else { return }
-        try? r.seek(toOffset: UInt64((c.written - Splice.tailFrames) * Self.bytesPerFrame))
+        // The tail ends with the music, not with silence the pause may have left (it isn't found in anything).
+        var end = c.written
+        while end > Splice.tailFrames, isSilent(c, frame: end - 1), c.written - end < Int(c.rate) { end -= 1 }
+        try? r.seek(toOffset: UInt64((end - Splice.tailFrames) * Self.bytesPerFrame))
         guard let d = try? r.read(upToCount: Splice.tailFrames * Self.bytesPerFrame), d.count == Splice.tailFrames * Self.bytesPerFrame else { return }
         splice = (Splice.int24(d), Data(), Date().addingTimeInterval(5), back)
     }
@@ -225,9 +228,12 @@ final class SliceStore: @unchecked Sendable {
         for r in c.readers { pump(c, r) }
     }
 
-    /// The last 0.4 s of a run are held back from Roon: room to take out the tail of a pause before anyone has read it.
+    /// The last 0.8 s of a run are held back from Roon: room to take out the tail of a pause before anyone has read it.
     /// (Roon plays seconds behind anyway.)
-    private static let holdBackSeconds = 0.4
+    /// 0.8 s since 0.3.2 (was 0.4): the Music app's pause notification comes after up to 0.4 s of fade and silence, and
+    /// with 0.4 s held back only silence was left to drip — the run then ended in 0.12 s of silence, and the splice looked
+    /// for silence (16:58:43, best 0.000). Roon plays 0.4 s further behind for it.
+    private static let holdBackSeconds = 0.8
     private static let fadeSeconds = 0.08
     private static let keepSeconds = 0.12
 
