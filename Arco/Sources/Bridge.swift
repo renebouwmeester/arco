@@ -483,8 +483,10 @@ final class Bridge: ObservableObject {
                     self.phase = .paused
                     // Keep Roon's reader awake while it passes the pause on, a little music at a time — all of the held-back
                     // part, as Roon's own "Paused" comes also when the KEF was not paused (21:46:19) and says nothing.
+                    // In tenths of all that is held back (17:05:36: with 1.2 s held, ten steps of 0.04 s never got past what
+                    // Roon had read once the pause's tail was cut — Roon kept the KEF playing, and play gave no sound).
                     for _ in 0..<10 where self.phase == .paused {
-                        self.store?.release(seconds: 0.04)
+                        self.store?.release(seconds: SliceStore.holdBackSeconds / 10)
                         try? await Task.sleep(for: .milliseconds(40))
                     }
                 }
