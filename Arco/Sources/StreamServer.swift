@@ -96,10 +96,11 @@ final class StreamServer: @unchecked Sendable {
         connection.send(content: out, completion: .contentProcessed { _ in connection.cancel() })
     }
 
-    /// Arco's own icon as a PNG, for the session in Roon.
+    /// Arco's icon for the session in Roon: the white glyph that fills its square (RoonIcon, see Design/make-icons.swift);
+    /// the app icon only as a fallback — Roon draws it as a speck.
     private func iconPNG() -> Data {
         lock.lock(); if let icon { lock.unlock(); return icon }; lock.unlock()
-        let image = NSApplication.shared.applicationIconImage ?? NSImage()
+        let image = NSImage(named: "RoonIcon") ?? NSApplication.shared.applicationIconImage ?? NSImage()
         var png = Data()
         if let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
            let data = rep.representation(using: .png, properties: [:]) { png = data }

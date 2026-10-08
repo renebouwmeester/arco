@@ -81,6 +81,21 @@ func menuGlyph(to url: URL) {
     ctx.endPDFPage(); ctx.closePDF()
 }
 
+/// The icon Roon shows for Arco's source (the signal path, the zone): white on clear, filling the square — Roon draws
+/// source icons small inside its own circle, so a tile with a margin (the app icon) shrinks to a speck. The menu bar's
+/// bold strokes, centred on the drawing's box (x 39…131, y 29…131 with the strokes) at 95% of the square.
+func roonIcon(_ size: Int) -> CGImage {
+    let ctx = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8, bytesPerRow: 0,
+                        space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    ctx.translateBy(x: 0, y: CGFloat(size)); ctx.scaleBy(x: 1, y: -1)
+    let s = 0.95 * CGFloat(size) / 102
+    ctx.translateBy(x: CGFloat(size) / 2 - 85 * s, y: CGFloat(size) / 2 - 80 * s); ctx.scaleBy(x: s, y: s)
+    let white = rgb(0xFFFFFF)
+    draw([Stroke(path: hair, width: 6, color: white), Stroke(path: stick, width: 10, color: white)]
+         + waves.map { Stroke(path: $0, width: 10, color: white) }, in: ctx)
+    return ctx.makeImage()!
+}
+
 let assets = URL(fileURLWithPath: "Arco/Assets.xcassets")
 let iconset = assets.appendingPathComponent("AppIcon.appiconset")
 let menuset = assets.appendingPathComponent("MenuIcon.imageset")
@@ -101,4 +116,9 @@ try #"{"images":[\#(images.joined(separator: ","))],"info":{"author":"xcode","ve
 menuGlyph(to: menuset.appendingPathComponent("menu.pdf"))
 try #"{"images":[{"idiom":"universal","filename":"menu.pdf"}],"info":{"author":"xcode","version":1},"properties":{"template-rendering-intent":"template","preserves-vector-representation":true}}"#
     .write(to: menuset.appendingPathComponent("Contents.json"), atomically: true, encoding: .utf8)
+let roonset = assets.appendingPathComponent("RoonIcon.imageset")
+try FileManager.default.createDirectory(at: roonset, withIntermediateDirectories: true)
+writePNG(roonIcon(256), to: roonset.appendingPathComponent("roon.png"))
+try #"{"images":[{"idiom":"universal","filename":"roon.png"}],"info":{"author":"xcode","version":1}}"#
+    .write(to: roonset.appendingPathComponent("Contents.json"), atomically: true, encoding: .utf8)
 print("icons written")
