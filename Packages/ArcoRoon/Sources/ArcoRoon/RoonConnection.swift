@@ -280,6 +280,9 @@ public final class RoonConnection: NSObject {
 
     // MARK: - The state file (roonstate)
 
+    /// Enabled in a Roon before: a token is kept. (Whether it still holds, only the Core can say.)
+    public var wasPaired: Bool { !((savedState()["tokens"] as? [String: String]) ?? [:]).isEmpty }
+
     private func savedState() -> JSON {
         guard let data = try? Data(contentsOf: stateFile),
               let json = (try? JSONSerialization.jsonObject(with: data)) as? JSON else { return [:] }

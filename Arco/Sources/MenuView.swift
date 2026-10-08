@@ -15,6 +15,13 @@ struct MenuView: View {
     }
 
     private var isPaired: Bool { if case .paired = model.connectionState { return true }; return false }
+    /// Enabled in Roon before, and connecting again — after a start or an update (0.3.1, René: "Het rijtje goed te keuren
+    /// is nu weg – lijkt zichzelf te hebben hersteld?"): the menu says it connects instead of showing the checklist, whose
+    /// "Enabled in Roon" stood open for those seconds. Only if Roon really waits for Enable does the checklist return.
+    private var reconnecting: Bool {
+        if case .waitingForAuthorization = model.connectionState { return false }
+        return !isPaired && model.connection.wasPaired
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -26,8 +33,10 @@ struct MenuView: View {
             }
             Divider()
             // The checklist while something is missing — also while Roon isn't connected (its last item).
-            if !(setup.macReady && isPaired) {
+            if !(setup.macReady && (isPaired || reconnecting)) {
                 SetupList(setup: setup, connection: model.connectionState)
+            } else if reconnecting {
+                Text(statusLine).font(.callout).foregroundStyle(.secondary)
             }
             if isPaired {
                 if !setup.macReady { Divider() }
