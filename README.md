@@ -56,8 +56,17 @@ Switch it off and the Mac gets its own output back. Switching zones while it pla
 ## Good to know
 
 - Roon plays a few seconds behind the Music app: Roon keeps a buffer of the live stream, as it does for any source.
+- Next and previous take a few seconds to be heard: Roon starts a new stream and has to buffer it as the music comes in
+  (a file from Qobuz it can fetch ahead; a live source it can't).
 - A change of sample rate between two tracks is a fresh start in Roon — gapless holds between tracks at the same rate.
-- Roon's progress bar may count through a stretch of tracks at the same rate rather than the current track alone.
+  The Music app itself pauses there to change the clock.
+- Roon's progress bar counts through a stretch of tracks at the same rate rather than the current track alone; the title,
+  artist and cover change with each track.
+- At 192 kHz a stretch holds about an hour of music (a WAV file's limit); a longer album continues in a new one, starting
+  between two tracks.
+- Hi-res needs a steady connection from Roon to the endpoint: a speaker on a weak wifi link may drop out at 192 kHz
+  (in Roon, *Device Setup › Max Sample Rate* helps).
+- Seeking within a track in the Music app isn't passed on to Roon.
 - While *Send to Roon* is on, Arco is the Mac's sound output: sound from other apps (a video in the browser) goes to
   Roon too. Sound effects follow *System Settings › Sound › Play sound effects through* — set it to the Mac's own
   speakers and they stay on the Mac.
