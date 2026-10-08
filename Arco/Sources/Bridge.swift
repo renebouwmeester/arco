@@ -67,6 +67,9 @@ final class Bridge: ObservableObject {
     private var ownUntil = Date.distantPast
     /// The clock per track (0.3.0): the Music app never changes the rate itself — Arco does (see TrackClock).
     private let clock = TrackClock()
+    /// The Music app's own log of the formats it sets up (0.3.3, see FormatLog) — first source of a track's rate.
+    private let formats = FormatLog()
+    private var lastChangeAt: Date?
     private var lastClockChange: (id: String, at: Date)?
     private var coverNumber = 0
     private static let coverRun = String(UInt64.random(in: 0...UInt64.max), radix: 36)
@@ -165,6 +168,9 @@ final class Bridge: ObservableObject {
         } else {
             source = music
         }
+        // The format log first: switching the output makes the Music app set up a new queue, and that line names the rate of
+        // the track that plays (see FormatLog).
+        formats.start()
         // Basso's lesson for a change of output or clock: pause, change, resume. Switching the output under a playing
         // Music app makes it stumble (20:27:58: paused and on again 42 ms later — a hiccup in the music itself).
         let wasPlaying = source.state == .playing
@@ -200,6 +206,8 @@ final class Bridge: ObservableObject {
 
     func turnOff() {
         attempt += 1   // an attempt to turn on that is still under way stops at its next step
+        formats.stop()
+        lastChangeAt = nil
         if let rateWatch, let arcoDevice { AudioDevices.stopWatchingSampleRate(of: arcoDevice, rateWatch) }
         rateWatch = nil
         heartbeat?.invalidate(); heartbeat = nil
@@ -246,7 +254,7 @@ final class Bridge: ObservableObject {
         guard let track = source.track else { return }
         let left = max(1000, track.durationMs - Int(source.position() * 1000))
         store.startTrack(.init(info: makeInfo(track), durationMs: left), newRun: true)
-        followClock(track)
+        followClock(track, kind: .start)
         // No sound within five seconds: say so instead of waiting for nothing.
         try? await Task.sleep(for: .seconds(5))
         if session === s, phase == .starting, store.status == nil {
@@ -455,7 +463,7 @@ final class Bridge: ObservableObject {
                 // No length in Music's notification (a streamed track, 7 Oct 22:06: the Aria counted as one second, and
                 // the next "next" looked like a natural end): ask Music once more when it has loaded the track.
                 if track.durationMs <= 0 { refreshLength(of: track.id) }
-                if state == .playing { followClock(track) }
+                if state == .playing { followClock(track, kind: natural ? .natural : .skip) }
                 if let mark = store.startTrack(.init(info: info, durationMs: track.durationMs), newRun: !natural) {
                     marks.append((mark.number, mark.ms, info))
                     Log.note("next track: \(track.title) — goes on in run \(mark.number) at \(mark.ms) ms (\(String(format: "%.1f", left)) s were left)")
@@ -502,6 +510,7 @@ final class Bridge: ObservableObject {
                 }
                 // The splice (0.3.2, see Splice): the Music app a little back, the run's end found again in the new sound.
                 // Not near the start of a track (back would be another track), and not for Spotify.
+                if phase == .paused { formats.quiet(for: 2.5) }   // a resume: a queue set up now is about this track
                 if phase == .paused, s === music, let store, store.status.map({ roonSlice == $0.number }) == true {
                     let at = s.position()
                     if at >= 2.5 {
@@ -525,17 +534,34 @@ final class Bridge: ObservableObject {
     // MARK: - The clock per track (0.3.0, see TrackClock)
 
     /// A new track of the Music app: its own rate, and the Arco device set to it.
-    private func followClock(_ track: SourceTrack) {
+    private func followClock(_ track: SourceTrack, kind: FormatLog.Change) {
         guard TrackClock.enabled, source === music, let arco = arcoDevice else { return }
+        let change = Date(), previous = lastChangeAt
+        lastChangeAt = change
         Task { @MainActor [weak self] in
             guard let self else { return }
             let current = { self.source === self.music && self.music.track?.id == track.id && self.isOn }
-            guard let read = await self.clock.readRate(of: track, music: self.music, stillCurrent: current) else {
+            // First the Music app's own log (0.3.3); AppleScript once beside it, or on its own when the log has nothing.
+            var read: (rate: Int, how: String)?
+            let now = Int(AudioDevices.sampleRate(of: arco) ?? 0)
+            let fromLog = await self.formats.rate(kind, change: change, previous: previous, current: now)
+            if let fromLog {
+                read = fromLog
+                if let s = self.music.sampleRate(), s > 0, Int(s) != fromLog.rate {
+                    Log.note("clock: \(track.title) — the log says \(fromLog.rate) Hz, AppleScript \(Int(s)) Hz: the log it is")
+                }
+            } else {
+                read = await self.clock.readRate(of: track, music: self.music, stillCurrent: current)
+            }
+            guard current(), let read else {
                 if current() { Log.note("clock: \(track.title) — the Music app names no rate; Arco stays at \(Int(AudioDevices.sampleRate(of: arco) ?? 0)) Hz") }
                 return
             }
             self.clock.remember(read.rate, for: track)
             await self.setClock(read.rate, for: track, how: read.how, fromStart: true)
+            // From the log, the rate is what the decoder set up: no second opinion from AppleScript (on macOS 15 it would
+            // "correct" it to 44.1).
+            if fromLog != nil { return }
             // One more reading five seconds later: a late correction from the Music app.
             try? await Task.sleep(for: .seconds(5))
             guard current(), let r = self.music.sampleRate(), r > 0 else { return }
@@ -563,6 +589,7 @@ final class Bridge: ObservableObject {
         let playing = music.state == .playing
         Log.note("clock: \(track.title) — \(rate) Hz (\(how)): Arco \(Int(now)) → \(Int(target)) Hz\(back ? ", from the start" : "")")
         ownUntil = Date().addingTimeInterval(3)
+        formats.quiet(for: 2.5)   // the queue the Music app sets up again now is about this track (see FormatLog)
         // Before the pause, which can take the Music app two seconds (17:08:39): from now on Roon gets nothing past the
         // track's start.
         if back { store?.restartTrackAtNewRate() }
