@@ -23,7 +23,8 @@ ones that only speak RAAT.
 
 ## Requirements
 
-- macOS 14 Sonoma or later, on Apple silicon or Intel
+- macOS 14 Sonoma or later, on Apple silicon or Intel — so far tested on macOS 27 with Apple silicon; reports from
+  other versions and from Intel Macs are very welcome
 - A Roon Core on the same network (Roon 2.x)
 - The Music app on the Mac, with an Apple Music subscription
 - For the clock per track: in Music › Settings › Playback, set *Audio Quality* to **Lossless** (up to 24-bit/192 kHz
