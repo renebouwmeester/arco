@@ -92,6 +92,7 @@ final class Bridge: ObservableObject {
                 self.sourceChanged(s, state, track, changed)
             }
         }
+        formats.onLossless = { [weak self] at, rate in self?.lateLossless(at: at, rate: rate) }
         let holder = storeHolder, capture = capture
         capture.onAudio = { pcm, frames, firstSound in holder.write(pcm, frames, firstSound, rate: capture.rate) }
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
@@ -570,6 +571,20 @@ final class Bridge: ObservableObject {
             guard Int(r) != read.rate else { return }
             self.clock.remember(Int(r), for: track)
             await self.setClock(Int(r), for: track, how: "the Music app, five seconds in", fromStart: false)
+        }
+    }
+
+    /// A lossless line that came after the clock was chosen (0.3.4): the Music app started the track in AAC and set up the
+    /// real format later. Up to 20 s after the change of track, set the clock after all, and remember the track's rate.
+    private func lateLossless(at: Date, rate: Int) {
+        guard TrackClock.enabled, isOn, source === music, let change = lastChangeAt, at >= change,
+              at.timeIntervalSince(change) < 20, let track = music.track, let arco = arcoDevice else { return }
+        clock.remember(rate, for: track)
+        guard music.state == .playing, AudioDevices.bestRate(Double(rate), of: arco) != AudioDevices.sampleRate(of: arco) else { return }
+        Log.note("clock: \(track.title) — the Music app's log now says \(rate) Hz (it started otherwise): correcting")
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.setClock(rate, for: track, how: "the Music app's log, late", fromStart: self.music.position() < 3)
         }
     }
 

@@ -16,6 +16,12 @@
 // - a skip: the first line within 1.2 s after it; none — the same format;
 // - the start of a session: the last line since Arco was switched on (the Music app sets up a queue for the new output).
 // "None means the same" only once the log has shown it works on this Mac (a line seen); until then, AppleScript.
+//
+// 0.3.4 (8 Oct 2026, Basso's evening on the KEF): the Music app can start a streamed track in AAC — 'qaac', 1024 frames
+// per packet, 48 kHz for a hi-res master — and set up the real format about two seconds later ('qlac', 4096 frames, 96 kHz).
+// A clock set on that AAC line was wrong, and the Music app then stayed at 48. So only lossless lines count ('qlac', 'alac',
+// 'lpcm'); a skip or a start waits up to 2.5 s for one; and a lossless line that comes later anyway (up to 20 s after the
+// change) corrects the clock (Bridge).
 // Lines in the seconds after a resume or after Arco's own change of clock are about the track that already plays.
 import Foundation
 
@@ -29,6 +35,9 @@ final class FormatLog {
     private(set) var unavailable = false
     /// The log has given a line since it started: it works here, and silence means "the same format".
     private(set) var seenAny = false
+    private static let lossless: Set<String> = ["qlac", "alac", "lpcm"]
+    /// Each lossless line (outside a quiet moment): for a late correction (Bridge).
+    var onLossless: ((Date, Int) -> Void)?
     /// Moments after which lines are about the track that already plays (a resume, Arco's own change of clock).
     private var quietUntil = Date.distantPast
 
@@ -89,9 +98,14 @@ final class FormatLog {
                 format = String(message[f].dropFirst(8).dropLast())
             }
             let now = Date()
+            guard Self.lossless.contains(format) else {
+                Log.note("format log: the Music app set up \(format) at \(rate) Hz — not lossless (a quick start), doesn't count")
+                continue
+            }
             if now < quietUntil { continue }
             entries.append(Entry(at: now, rate: rate, format: format))
             seenAny = true
+            onLossless?(now, rate)
             if entries.count > 50 { entries.removeFirst(entries.count - 50) }
             Log.note("format log: the Music app set up \(format) at \(rate) Hz")
         }
@@ -107,7 +121,8 @@ final class FormatLog {
         switch kind {
         case .start:
             if let e = entries.last { return (e.rate, "the Music app's log, \(e.format)") }
-            try? await Task.sleep(for: .milliseconds(1500))
+            let until = change.addingTimeInterval(2.5)
+            while Date() < until, entries.isEmpty { try? await Task.sleep(for: .milliseconds(100)) }
             return entries.last.map { ($0.rate, "the Music app's log, \($0.format)") }
         case .natural:
             if let e = entries.last(where: { $0.at <= change && $0.at > (previous ?? .distantPast) }) {
@@ -115,7 +130,7 @@ final class FormatLog {
             }
             return seenAny ? same : nil
         case .skip:
-            let until = change.addingTimeInterval(1.2)
+            let until = change.addingTimeInterval(2.5)
             while Date() < until {
                 if let e = entries.first(where: { $0.at > change.addingTimeInterval(-0.3) }) {
                     return (e.rate, "the Music app's log, \(e.format)")
