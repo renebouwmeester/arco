@@ -32,7 +32,7 @@ targets:
         # A menu bar app: no Dock icon, no main window.
         LSUIElement: true
         NSLocalNetworkUsageDescription: Arco finds your Roon Core on the local network and streams your music to it.
-        NSAppleEventsUsageDescription: Arco reads what the Music app and Spotify play (title, artist, album, cover) and passes Roon's play, pause and skip buttons on to them.
+        NSAppleEventsUsageDescription: Arco reads what the Music app plays (title, artist, album, cover) and passes Roon's play, pause and skip buttons on to them.
         NSMicrophoneUsageDescription: Arco reads the Arco audio output's loopback — the music the Music app plays to it. It never listens to a microphone.
         # Sparkle: the appcast of the latest GitHub Release, and the public half of René's EdDSA key (the private half
         # stays in his keychain; release.sh signs each package with it).

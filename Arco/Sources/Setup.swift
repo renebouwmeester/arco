@@ -1,5 +1,5 @@
 // What Arco needs before it can play, as a checklist at the top of the menu: its audio driver, the microphone permission
-// (to read its own output), control of Music and Spotify, and the Enable in Roon. It shows while something is missing,
+// (to read its own output), control of Music (and Spotify, when it is switched on), and the Enable in Roon. It shows while something is missing,
 // each item with the one button that helps — and goes away when all is done.
 import AppKit
 import AVFoundation
@@ -20,7 +20,9 @@ final class SetupCheck: ObservableObject {
     /// Per app that runs now ("Music", "Spotify"); an app that doesn't run can't be asked, and isn't listed.
     @Published private(set) var automation: [AppAccess] = []
 
-    private static let apps = [("Music", "com.apple.Music"), ("Spotify", "com.spotify.client")]
+    private static var apps: [(String, String)] {
+        [("Music", "com.apple.Music")] + (Bridge.spotifyEnabled ? [("Spotify", "com.spotify.client")] : [])
+    }
 
     func refresh() {
         driver = Bridge.driverInstalled

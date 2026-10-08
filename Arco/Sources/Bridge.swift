@@ -112,6 +112,9 @@ final class Bridge: ObservableObject {
         }
     }
     static var driverInstalled: Bool { AudioDevices.arco != nil }
+    /// Spotify as a source: in the code, off unless asked for (René, 8 Oct: Arco is Apple Music in Roon; Spotify goes to
+    /// Roon by way of a Spotify Connect endpoint). `defaults write nl.renebouwmeester.arco SpotifySource -bool true`.
+    static var spotifyEnabled: Bool { UserDefaults.standard.bool(forKey: "SpotifySource") }
 
     // MARK: - On and off
 
@@ -144,9 +147,14 @@ final class Bridge: ObservableObject {
         self.address = address
         zoneID = zone.id
         // The source: the app that plays now (Music when neither does).
-        music.refresh(); spotify.refresh()
-        source = spotify.state == .playing && music.state != .playing ? spotify : music
-        if source !== spotify, spotify.state == .playing { spotify.pause() }
+        music.refresh()
+        if Self.spotifyEnabled {
+            spotify.refresh()
+            source = spotify.state == .playing && music.state != .playing ? spotify : music
+            if source !== spotify, spotify.state == .playing { spotify.pause() }
+        } else {
+            source = music
+        }
         // Basso's lesson for a change of output or clock: pause, change, resume. Switching the output under a playing
         // Music app makes it stumble (20:27:58: paused and on again 42 ms later — a hiccup in the music itself).
         let wasPlaying = source.state == .playing
@@ -413,6 +421,7 @@ final class Bridge: ObservableObject {
     private func sourceChanged(_ s: PlayerSource, _ state: SourceState, _ track: SourceTrack?, _ changed: Bool) {
         Log.note("\(s.name.lowercased()): \(state.rawValue)\(changed ? " — \(track?.title ?? "-")" : "")\(s === source ? "" : " (not the source)")")
         guard phase != .switchingOn else { return }   // turnOn chooses the source itself, and pauses it on purpose
+        if s === spotify, !Self.spotifyEnabled { return }
         if s !== source {
             // The other app starts playing: it becomes the source (one voice), the first one pauses, and a new run begins
             // at once — like a skip. Its pausing and stopping otherwise don't matter.

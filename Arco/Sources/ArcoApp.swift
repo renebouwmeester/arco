@@ -1,4 +1,4 @@
-// Arco — Apple Music and Spotify on your Roon zones, from the menu bar.
+// Arco — Apple Music on your Roon zones, from the menu bar.
 import SwiftUI
 
 @main
