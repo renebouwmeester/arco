@@ -10,6 +10,7 @@ final class ArcoModel: ObservableObject {
 
     let connection: RoonConnection
     let bridge: Bridge
+    private var lastShown = ""
     let setup = SetupCheck()
     let updater = Updater()
     private let tracker = ZoneTracker()
@@ -75,6 +76,12 @@ final class ArcoModel: ObservableObject {
     }
 
     private func zonesChanged(_ zones: [RoonZone]) {
+        // What Roon itself shows on the chosen zone, whenever it changes while Arco sends (0.3.1): a tester's streamer
+        // showed the previous track's title — the log now has Roon's side next to what Arco sent it.
+        if bridge.isOn, let id = selectedZoneID, let zone = zones.first(where: { $0.id == id }) {
+            let shows = [zone.nowPlayingTitle, zone.nowPlayingSubtitle].compactMap { $0 }.joined(separator: " · ")
+            if shows != lastShown { lastShown = shows; Log.note("roon shows: \(shows.isEmpty ? "nothing" : shows) (\(zone.state))") }
+        }
         self.zones = zones
         // The chosen zone got a new id (grouped, ungrouped, renamed output): find it back by name.
         if selectedZone == nil, let name = UserDefaults.standard.string(forKey: Self.zoneNameKey),

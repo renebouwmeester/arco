@@ -54,9 +54,14 @@ final class TrackClock {
         let started = Date()
         let hiRes = (remembered(t) ?? 0) > 48_000
         var last = 0
+        // Every reading into the log (0.3.1): which the Music app gave, and when.
+        var readings: [String] = []
+        defer { Log.note("clock: \(t.title) — readings \(readings.joined(separator: ", "))\(remembered(t).map { "; remembered \($0)" } ?? "")") }
         while Date().timeIntervalSince(started) < 3 {
             guard stillCurrent() else { return nil }
-            if let r = music.sampleRate(), r > 0 {
+            let r = music.sampleRate()
+            readings.append(String(format: "%@ at %.2f s", r.map { String(Int($0)) } ?? "none", Date().timeIntervalSince(started)))
+            if let r, r > 0 {
                 last = Int(r)
                 if last > 48_000 || !hiRes { return (last, "the Music app") }
             }

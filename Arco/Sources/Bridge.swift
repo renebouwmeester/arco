@@ -281,7 +281,7 @@ final class Bridge: ObservableObject {
             self.store?.forget(before: slice.number)
             self.ownUntil = Date().addingTimeInterval(3)
             var answer = await s.play(track: String(slice.number), url: url, info: slice.info)
-            Log.note("play run \(slice.number): Roon answered \(answer)")
+            Log.note("play run \(slice.number) (\(Self.lines(slice.info)?.title ?? "?")): Roon answered \(answer)")
             if answer == "Timeout", self.session === s, self.store?.isCurrent(slice) == true {
                 let fresh = url + "?n=\(Int(Date().timeIntervalSince1970 * 1000))"
                 answer = await s.play(track: String(slice.number), url: fresh, info: slice.info)
@@ -353,7 +353,7 @@ final class Bridge: ObservableObject {
             while let i = marks.firstIndex(where: { $0.number == n && $0.ms <= ms + 300 }) {
                 let mark = marks.remove(at: i)
                 nowPlaying = Self.lines(mark.info)
-                Log.note("roon reached \(mark.ms) ms of run \(n): track information updated")
+                Log.note("roon reached \(mark.ms) ms of run \(n): track information → \(Self.lines(mark.info)?.title ?? "?")")
                 Task { await session?.updateInfo(track: track, info: mark.info) }
             }
         case .ended:
@@ -533,6 +533,9 @@ final class Bridge: ObservableObject {
     private func setClock(_ rate: Int, for track: SourceTrack, how: String, fromStart: Bool) async {
         guard let arco = arcoDevice, let now = AudioDevices.sampleRate(of: arco) else { return }
         let target = AudioDevices.bestRate(Double(rate), of: arco)
+        if target != Double(rate) {
+            Log.note("clock: \(rate) Hz isn't offered by the Arco device (\(AudioDevices.availableRates(of: arco).map { String(Int($0)) }.joined(separator: ", "))) — \(Int(target)) instead")
+        }
         guard target != now else { Log.note("clock: \(track.title) — \(rate) Hz (\(how)), Arco is there already"); return }
         // Never two changes for one track within two seconds: a reading that keeps changing mustn't make Music stumble.
         if let last = lastClockChange, last.id == track.id, Date().timeIntervalSince(last.at) < 2 { return }
