@@ -1,0 +1,7 @@
+<p>The right sample rate on every macOS.</p>
+<ul>
+<li><b>Arco now reads each track&#x27;s sample rate from the Music app&#x27;s own audio log</b> — the format the Music app actually sets up for playback. On macOS 15 the Music app&#x27;s AppleScript reported 44.1 kHz for streamed hi-res tracks, so Arco switched to the wrong rate there; the log has it right, on every version</li>
+<li>It knows the next track&#x27;s rate before it starts (the Music app loads it ahead for gapless playback), so the clock changes right at the start of the track</li>
+<li>Reading the log needs an administrator account on the Mac; without one, Arco asks the Music app as before</li>
+</ul>
+<p>Thanks to the first tester for the logs that showed it.</p>
