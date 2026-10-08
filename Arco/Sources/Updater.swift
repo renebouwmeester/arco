@@ -30,30 +30,36 @@ final class Updater: NSObject, SPUStandardUserDriverDelegate {
     nonisolated func standardUserDriverWillFinishUpdateSession() {
         MainActor.assumeIsolated {
             authorizationWatch?.invalidate(); authorizationWatch = nil
+            for w in raised { w.level = .normal }
+            raised = []
             NSApp.setActivationPolicy(.accessory)
         }
     }
 
-    /// The Touch ID / password question is another process; when it goes, macOS activates the app that was in front
-    /// before. Seen it come and go, with Arco not in front: Arco comes back once, with its update window.
+    /// During an update session: every Sparkle window floats above other apps' windows from the moment it appears, so it
+    /// stays in view whichever app macOS puts in front (activating Arco is refused since macOS 14 — the Dock icon only
+    /// bounced, 8 Oct). Which app is in front is noted in the log, for when it still goes wrong.
+    private var raised: [NSWindow] = []
     private var authorizationWatch: Timer?
     private func watchForAuthorization() {
         authorizationWatch?.invalidate()
-        var sawQuestion = false
+        var lastFront = ""
         let started = Date()
         authorizationWatch = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] timer in
             MainActor.assumeIsolated {
-                let front = NSWorkspace.shared.frontmostApplication
-                let id = front?.bundleIdentifier ?? ""
-                let asking = id == "com.apple.SecurityAgent" || id.hasPrefix("com.apple.LocalAuthentication")
-                    || id == "com.apple.coreautha" || (front?.localizedName ?? "").contains("SecurityAgent")
-                if asking { sawQuestion = true; return }
-                if sawQuestion, front?.processIdentifier != ProcessInfo.processInfo.processIdentifier {
-                    NSApp.activate(ignoringOtherApps: true)
-                    timer.invalidate(); self?.authorizationWatch = nil
-                } else if Date().timeIntervalSince(started) > 600 {
-                    timer.invalidate(); self?.authorizationWatch = nil
+                guard let self else { timer.invalidate(); return }
+                for w in NSApp.windows where w.isVisible && !self.raised.contains(where: { $0 === w }) {
+                    let controller = w.windowController.map { String(describing: type(of: $0)) } ?? ""
+                    guard controller.hasPrefix("SU") || controller.hasPrefix("SPU") else { continue }
+                    w.level = .floating
+                    w.orderFrontRegardless()
+                    self.raised.append(w)
+                    Log.note("update: \(controller) floats")
                 }
+                let front = NSWorkspace.shared.frontmostApplication
+                let name = "\(front?.localizedName ?? "?") (\(front?.bundleIdentifier ?? "?"))"
+                if name != lastFront { lastFront = name; Log.note("update: in front — \(name)") }
+                if Date().timeIntervalSince(started) > 900 { timer.invalidate(); self.authorizationWatch = nil }
             }
         }
     }
