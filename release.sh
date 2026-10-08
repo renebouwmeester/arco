@@ -67,6 +67,7 @@ DRV="$ROOT/Library/Audio/Plug-Ins/HAL/Arco.driver"
 mkdir -p "$DRV/Contents/MacOS"
 cp Driver/Info.plist "$DRV/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$DRV/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(/usr/libexec/PlistBuddy -c "Print CFBundleVersion" Arco/Info.plist)" "$DRV/Contents/Info.plist"
 clang -Wall -Wextra -Wno-unused-parameter -O2 -arch arm64 -arch x86_64 -mmacosx-version-min=14.0 -bundle \
   -framework CoreFoundation -o "$DRV/Contents/MacOS/Arco" Driver/ArcoDriver.c
 codesign --force --options runtime --timestamp --sign "$APP_ID" "$DRV"
@@ -81,6 +82,10 @@ while /usr/libexec/PlistBuddy -c "Print :$N:RootRelativeBundlePath" "$OUT/compon
 for ((i = 0; i < N; i++)); do
   /usr/libexec/PlistBuddy -c "Delete :$i:BundleIsRelocatable" "$OUT/components.plist" 2>/dev/null || true
   /usr/libexec/PlistBuddy -c "Add :$i:BundleIsRelocatable bool false" "$OUT/components.plist"
+  # Always replace: with version checking on, the installer skipped a bundle already there with the same number — the
+  # driver of 6 Oct stayed through 0.1.2 and 0.1.3 (its number never changed).
+  /usr/libexec/PlistBuddy -c "Delete :$i:BundleIsVersionChecked" "$OUT/components.plist" 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c "Add :$i:BundleIsVersionChecked bool false" "$OUT/components.plist"
 done
 pkgbuild --root "$ROOT" --component-plist "$OUT/components.plist" --identifier nl.renebouwmeester.arco.pkg \
   --version "$VERSION" --scripts Package/scripts --install-location / "$OUT/arco.pkg" > /dev/null

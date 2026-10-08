@@ -20,6 +20,7 @@ struct MenuView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Arco").font(.headline)
+                Text(Self.version).font(.caption).foregroundStyle(.tertiary)
                 Spacer()
                 Text(statusLine).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
@@ -60,6 +61,9 @@ struct MenuView: View {
         .frame(width: 320)
         .onAppear { setup.refresh() }
     }
+
+    /// "0.1.3" — which Arco this is, for a bug report and after an update.
+    static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
 
     private var statusLine: String {
         switch model.connectionState {
