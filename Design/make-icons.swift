@@ -83,16 +83,17 @@ func menuGlyph(to url: URL) {
 
 /// The icon Roon shows for Arco's source (the signal path, the zone): Basso's rose on clear, edge to edge — Roon draws
 /// source icons small inside its own circle, so a tile with a margin (the app icon) shrinks to a speck. Rose, not white:
-/// one image serves Roon's light and dark mode alike, and white vanished in light mode. The menu bar's bold strokes,
-/// centred on the drawing's box (x 39…131, y 29…131 with the strokes), filling the square.
+/// one image serves Roon's light and dark mode alike, and white vanished in light mode. Bolder than the menu bar
+/// (René: "iets dikker"): 14 for the stick and the waves, 10 for the hair; centred on the drawing's box with those strokes
+/// (x 37…133, y 27…133), filling the square.
 func roonIcon(_ size: Int) -> CGImage {
     let ctx = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8, bytesPerRow: 0,
                         space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
     ctx.translateBy(x: 0, y: CGFloat(size)); ctx.scaleBy(x: 1, y: -1)
-    let s = CGFloat(size) / 102
+    let s = CGFloat(size) / 106
     ctx.translateBy(x: CGFloat(size) / 2 - 85 * s, y: CGFloat(size) / 2 - 80 * s); ctx.scaleBy(x: s, y: s)
-    draw([Stroke(path: hair, width: 6, color: rose), Stroke(path: stick, width: 10, color: rose)]
-         + waves.map { Stroke(path: $0, width: 10, color: rose) }, in: ctx)
+    draw([Stroke(path: hair, width: 10, color: rose), Stroke(path: stick, width: 14, color: rose)]
+         + waves.map { Stroke(path: $0, width: 14, color: rose) }, in: ctx)
     return ctx.makeImage()!
 }
 
