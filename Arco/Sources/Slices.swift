@@ -190,11 +190,22 @@ final class SliceStore: @unchecked Sendable {
     /// The splice after a pause (see Splice): the end of the run to find again, the new sound so far, until when to collect,
     /// and how far the bridge sent the Music app back (the fallback when the end isn't found).
     private var splice: (tail: [Int32], sound: Data, until: Date, back: Double)?
+    /// Where the run stood when the sound came back after a pause (see prepareSplice).
+    private var resumedAt: Int?
     /// The bridge resumes with a splice: take the end of the run now (it is the trimmed end of the pause).
     func prepareSplice(back: Double) {
         lock.lock(); defer { lock.unlock() }
         splice = nil
-        guard let c = current, !c.closed, c.written >= Splice.tailFrames, let r = c.reader else { return }
+        guard let c = current, !c.closed else { return }
+        // The new sound can be here before the bridge (16:55:24: 18 ms written first) — then the run's end is a mix of old
+        // and new that occurs nowhere, and the splice failed. Still held back, nobody has read it: take it back first.
+        let read = c.readers.map { $0.offset / Self.bytesPerFrame }.max() ?? 0
+        if let from = resumedAt, c.written > from, read <= from, c.written - from < Int(Self.holdBackSeconds * c.rate) {
+            try? c.writer?.truncate(atOffset: UInt64(from * Self.bytesPerFrame))
+            Log.note("runs: \(c.number) — \(c.ms(c.written - from)) ms written since the resume taken back for the splice")
+            c.written = from
+        }
+        guard c.written >= Splice.tailFrames, let r = c.reader else { return }
         try? r.seek(toOffset: UInt64((c.written - Splice.tailFrames) * Self.bytesPerFrame))
         guard let d = try? r.read(upToCount: Splice.tailFrames * Self.bytesPerFrame), d.count == Splice.tailFrames * Self.bytesPerFrame else { return }
         splice = (Splice.int24(d), Data(), Date().addingTimeInterval(5), back)
@@ -289,6 +300,7 @@ final class SliceStore: @unchecked Sendable {
             guard let first = firstSound else { return }
             gate = .writing
             released = 0
+            resumedAt = current?.written
             Log.note("runs: sound — writing")
             // Back from the clock's pause, at the start of the track (see restartAtTrackStart): cut the run back to it.
             if restartAtTrackStart, let c = current, !c.closed, !c.headerSent, c.written > trackStart {
@@ -307,11 +319,12 @@ final class SliceStore: @unchecked Sendable {
             sp.sound.append(data.prefix(count * Self.bytesPerFrame))
             if sp.sound.count < Int(2.5 * rate) * Self.bytesPerFrame, Date() < sp.until { splice = sp; return }
             splice = nil
-            if let m = Splice.find(tail: sp.tail, in: Splice.int24(sp.sound)), m.score >= 0.9 {
+            let m = Splice.find(tail: sp.tail, in: Splice.int24(sp.sound))
+            if let m, m.score >= 0.9 {
                 Log.note(String(format: "runs: resumed — spliced (%.3f), %d ms into the new sound", m.score, Int(Double(m.frame) / rate * 1000)))
                 data = sp.sound.subdata(in: min(sp.sound.count, m.frame * Self.bytesPerFrame)..<sp.sound.count)
             } else {
-                Log.note("runs: resumed — the end of the run not found again; on after \(sp.back) s")
+                Log.note("runs: resumed — the end of the run not found again (best \(m.map { String(format: "%.3f", $0.score) } ?? "-")); on after \(sp.back) s")
                 let skip = min(sp.sound.count, Int(sp.back * rate) * Self.bytesPerFrame)
                 data = sp.sound.subdata(in: skip..<sp.sound.count)
             }
