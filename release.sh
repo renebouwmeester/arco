@@ -68,6 +68,9 @@ mkdir -p "$DRV/Contents/MacOS"
 cp Driver/Info.plist "$DRV/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$DRV/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(/usr/libexec/PlistBuddy -c "Print CFBundleVersion" Arco/Info.plist)" "$DRV/Contents/Info.plist"
+# A fingerprint of the driver's source: the installer restarts Core Audio only when it changed (an update otherwise left
+# the Mac's sound — and Safari, and Arco's start — waiting for minutes, 8 Oct).
+/usr/libexec/PlistBuddy -c "Add :ArcoDriverSource string $(shasum -a 256 Driver/ArcoDriver.c | cut -c1-16)" "$DRV/Contents/Info.plist"
 clang -Wall -Wextra -Wno-unused-parameter -O2 -arch arm64 -arch x86_64 -mmacosx-version-min=14.0 -bundle \
   -framework CoreFoundation -o "$DRV/Contents/MacOS/Arco" Driver/ArcoDriver.c
 codesign --force --options runtime --timestamp --sign "$APP_ID" "$DRV"

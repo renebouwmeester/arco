@@ -1,8 +1,15 @@
 #!/bin/bash
-# Arco installer, after: restart Core Audio so the Arco output appears (the Mac's sound is gone for a moment), then open
-# Arco for the person who installed it.
-killall coreaudiod 2>/dev/null || true
-sleep 2
+# Arco installer, after: restart Core Audio when the driver is new or changed, so it loads (the Mac's sound is gone for a
+# moment; an update that leaves the driver as it was doesn't touch it — 8 Oct: a needless restart kept Core Audio, Safari
+# and Arco waiting for minutes). Then open Arco for the person who installed it.
+DRV="/Library/Audio/Plug-Ins/HAL/Arco.driver/Contents/Info.plist"
+now=$(/usr/libexec/PlistBuddy -c "Print :ArcoDriverSource" "$DRV" 2>/dev/null || echo "none")
+before=$(cat /tmp/arco-driver-before 2>/dev/null || echo "not installed")
+rm -f /tmp/arco-driver-before
+if [ "$now" != "$before" ]; then
+  killall coreaudiod 2>/dev/null || true
+  sleep 2
+fi
 user_id=$(stat -f %u /dev/console)
 if [ -n "$user_id" ] && [ "$user_id" != "0" ]; then
   launchctl asuser "$user_id" /usr/bin/open -a /Applications/Arco.app || true

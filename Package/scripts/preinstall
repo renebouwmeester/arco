@@ -1,5 +1,12 @@
 #!/bin/bash
-# Arco installer, before: quit a running Arco (it gives the Mac its own output back on the way out).
+# Arco installer, before: quit a running Arco (it gives the Mac its own output back on the way out), and note which driver
+# is there (its source fingerprint) — after the install Core Audio is restarted only when the driver changed.
 pkill -TERM -x Arco 2>/dev/null || true
 sleep 1
+DRV="/Library/Audio/Plug-Ins/HAL/Arco.driver/Contents/Info.plist"
+if [ -f "$DRV" ]; then
+  /usr/libexec/PlistBuddy -c "Print :ArcoDriverSource" "$DRV" 2>/dev/null > /tmp/arco-driver-before || echo "unknown" > /tmp/arco-driver-before
+else
+  rm -f /tmp/arco-driver-before
+fi
 exit 0
