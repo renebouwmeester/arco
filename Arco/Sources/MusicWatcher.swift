@@ -89,6 +89,10 @@ final class MusicWatcher: PlayerSource {
         return text == "playing"
     }
 
+    func seek(to seconds: Double) {
+        AppleScript.run("tell application \"Music\" to set player position to \(String(format: "%.3f", max(0, seconds)))")
+    }
+
     func seekToStart() { AppleScript.run(#"tell application "Music" to set player position to 0"#) }
 
     func play() { AppleScript.run(#"tell application "Music" to play"#) }

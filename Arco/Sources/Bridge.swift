@@ -498,6 +498,16 @@ final class Bridge: ObservableObject {
                     Log.note("resume: Roon is \((status.writtenMs - roonPositionMs) / 1000) s behind — a new run from where the Music app is")
                     store?.startTrack(.init(info: makeInfo(track), durationMs: left), newRun: true)
                 }
+                // The splice (0.3.2, see Splice): the Music app a little back, the run's end found again in the new sound.
+                // Not near the start of a track (back would be another track), and not for Spotify.
+                if phase == .paused, s === music, let store, store.status.map({ roonSlice == $0.number }) == true {
+                    let at = s.position()
+                    if at >= 2.5 {
+                        store.prepareSplice(back: 1.2)
+                        music.seek(to: at - 1.2)
+                        Log.note(String(format: "resume: the Music app 1.2 s back (at %.1f s) — a splice", at))
+                    }
+                }
                 if phase == .paused {
                     // Roon goes on at once (after a short pause it doesn't even re-open RAAT). Holding Music back until Roon
                     // played (c579c99) got in the way — during a change of clock above all.

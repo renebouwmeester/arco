@@ -187,6 +187,19 @@ final class SliceStore: @unchecked Sendable {
     private var restartAtTrackStart = false
     func restartTrackAtNewRate() { lock.lock(); restartAtTrackStart = true; lock.unlock() }
 
+    /// The splice after a pause (see Splice): the end of the run to find again, the new sound so far, until when to collect,
+    /// and how far the bridge sent the Music app back (the fallback when the end isn't found).
+    private var splice: (tail: [Int32], sound: Data, until: Date, back: Double)?
+    /// The bridge resumes with a splice: take the end of the run now (it is the trimmed end of the pause).
+    func prepareSplice(back: Double) {
+        lock.lock(); defer { lock.unlock() }
+        splice = nil
+        guard let c = current, !c.closed, c.written >= Splice.tailFrames, let r = c.reader else { return }
+        try? r.seek(toOffset: UInt64((c.written - Splice.tailFrames) * Self.bytesPerFrame))
+        guard let d = try? r.read(upToCount: Splice.tailFrames * Self.bytesPerFrame), d.count == Splice.tailFrames * Self.bytesPerFrame else { return }
+        splice = (Splice.int24(d), Data(), Date().addingTimeInterval(5), back)
+    }
+
     /// Released from the held-back part after a pause (see `release`); back to nothing when the music goes on.
     private var released = 0
 
@@ -287,6 +300,22 @@ final class SliceStore: @unchecked Sendable {
             restartAtTrackStart = false
             data = pcm.subdata(in: (first * Self.bytesPerFrame)..<pcm.count)
             count = frames - first
+        }
+        // The splice: collect 2.5 s of the new sound (at most five seconds of waiting), find the end of the run in it, and
+        // go on from the sample after it. Roon plays from its own supply meanwhile.
+        if var sp = splice, gate == .writing {
+            sp.sound.append(data.prefix(count * Self.bytesPerFrame))
+            if sp.sound.count < Int(2.5 * rate) * Self.bytesPerFrame, Date() < sp.until { splice = sp; return }
+            splice = nil
+            if let m = Splice.find(tail: sp.tail, in: Splice.int24(sp.sound)), m.score >= 0.9 {
+                Log.note(String(format: "runs: resumed — spliced (%.3f), %d ms into the new sound", m.score, Int(Double(m.frame) / rate * 1000)))
+                data = sp.sound.subdata(in: min(sp.sound.count, m.frame * Self.bytesPerFrame)..<sp.sound.count)
+            } else {
+                Log.note("runs: resumed — the end of the run not found again; on after \(sp.back) s")
+                let skip = min(sp.sound.count, Int(sp.back * rate) * Self.bytesPerFrame)
+                data = sp.sound.subdata(in: skip..<sp.sound.count)
+            }
+            count = data.count / Self.bytesPerFrame
         }
         while count > 0 {
             if let c = current, !c.closed {
