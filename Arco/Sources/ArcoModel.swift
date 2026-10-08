@@ -34,6 +34,7 @@ final class ArcoModel: ObservableObject {
         tracker.onChange = { [weak self] zones in self?.zonesChanged(zones) }
         connection.setStatus("Starting")
         connection.start()
+        Updater.announceIfUpdated()
     }
 
     var selectedZone: RoonZone? { zones.first { $0.id == selectedZoneID } }
