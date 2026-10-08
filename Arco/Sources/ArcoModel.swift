@@ -23,7 +23,9 @@ final class ArcoModel: ObservableObject {
             .appendingPathComponent("Arco", isDirectory: true)
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
         connection = RoonConnection(
-            extension: .init(id: "nl.renebouwmeester.arco", displayName: "Arco", version: version,
+            // With the Mac's name (René, 8 Oct): every Mac is enabled in Roon on its own, and two "Arco" lines in
+            // Settings › Extensions didn't say which was which.
+            extension: .init(id: "nl.renebouwmeester.arco", displayName: Self.extensionName, version: version,
                              publisher: "René Bouwmeester", email: "",
                              website: "https://github.com/renebouwmeester/arco"),
             required: [transportService, "com.roonlabs.audioinput:1"],
@@ -38,6 +40,9 @@ final class ArcoModel: ObservableObject {
     }
 
     var selectedZone: RoonZone? { zones.first { $0.id == selectedZoneID } }
+
+    /// "Arco on William" — the name in Roon's list of extensions.
+    static let extensionName = "Arco on \(Host.current().localizedName ?? "this Mac")"
 
     func select(_ zone: RoonZone) {
         let switching = zone.id != selectedZoneID

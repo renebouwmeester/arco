@@ -112,7 +112,7 @@ struct SetupList: View {
         switch connection {
         case .searching: return "Looking for a Roon Core on your network"
         case .connecting(let name): return "Connecting to \(name)"
-        case .waitingForAuthorization: return "In Roon, open Settings › Extensions and press Enable next to Arco"
+        case .waitingForAuthorization: return "In Roon, open Settings › Extensions and press Enable next to \(ArcoModel.extensionName) — once for each Mac"
         case .paired(let core): return "Connected to \(core.name)"
         }
     }

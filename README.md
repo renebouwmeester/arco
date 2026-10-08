@@ -40,7 +40,8 @@ ones that only speak RAAT.
    - **Microphone access** — Arco reads its *own* audio output back (the music Music plays to it). macOS files that
      under the microphone; Arco never listens to a microphone.
    - **Control Music** — to follow what plays and pass on Roon's buttons.
-   - **Enabled in Roon** — in Roon, open *Settings › Extensions* and press *Enable* next to Arco.
+   - **Enabled in Roon** — in Roon, open *Settings › Extensions* and press *Enable* next to *Arco on <your Mac>* — once
+     for each Mac (Roon remembers it after that, also through updates).
 
 The list goes away once everything is in place. *Open at login* is a checkbox in the menu.
 
