@@ -1,0 +1,13 @@
+<p>Arco now sets the clock per track itself.</p>
+<p><b>What&#x27;s new</b></p>
+<ul>
+<li><b>A clock per track, on every Mac</b>: the Music app never changes the output&#x27;s sample rate by itself, on any macOS — earlier versions only seemed to follow each track on Macs where something else did the switching. Arco now reads each track&#x27;s own rate from the Music app and sets its output to it: a 44.1 kHz track reaches Roon at 44.1, a 96 kHz track at 96</li>
+<li>At a change of rate Arco pauses the Music app for a moment, changes the clock and starts the track again from its first note — a fresh start in Roon, as before</li>
+<li>When Roon is far behind after a pause, Arco starts afresh from where the Music app is instead of playing on minutes late</li>
+</ul>
+<p><b>Good to know</b></p>
+<ul>
+<li>In Music › Settings › Playback, set <i>Audio Quality</i> to <b>Lossless</b> (up to 24-bit/192 kHz for hi-res)</li>
+<li>Prefer a fixed rate? <code>defaults write nl.renebouwmeester.arco ClockPerTrack -bool false</code> leaves it to Audio MIDI Setup</li>
+</ul>
+<p>Thanks to the first tester for the log that showed it.</p>

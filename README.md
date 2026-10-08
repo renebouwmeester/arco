@@ -14,8 +14,9 @@ ones that only speak RAAT.
 
 - **Any Roon zone, from the menu bar.** Pick the zone, switch on *Send to Roon*, press play in Music. The
   Roon app doesn't need to be open — a laptop on your lap with Music is enough.
-- **A clock per track.** Each track arrives in Roon at its own sample rate: a 44.1 kHz track plays at 44.1, the next
-  96 kHz track at 96. The menu shows the rate Roon receives.
+- **A clock per track.** Arco sets its output to each track's own sample rate, so a 44.1 kHz track arrives in Roon
+  at 44.1 and the next 96 kHz track at 96. The Music app doesn't change the rate by itself. The menu shows the rate
+  Roon receives.
 - **Gapless** between tracks at the same rate — a live album or a classical work plays through without a seam.
 - **What's playing, in Roon:** title, artist, album and cover per track. Roon's play, pause, next and previous buttons
   work, and so does the zone's volume, in Roon or in Arco's menu.
@@ -59,7 +60,7 @@ Switch it off and the Mac gets its own output back. Switching zones while it pla
 - Next and previous take a few seconds to be heard: Roon starts a new stream and has to buffer it as the music comes in
   (a file from Qobuz it can fetch ahead; a live source it can't).
 - A change of sample rate between two tracks is a fresh start in Roon — gapless holds between tracks at the same rate.
-  The Music app itself pauses there to change the clock.
+  Arco pauses the Music app there for a moment, changes the clock and starts the track again from its first note.
 - Roon's progress bar counts through a stretch of tracks at the same rate rather than the current track alone; the title,
   artist and cover change with each track.
 - At 192 kHz a stretch holds about an hour of music (a WAV file's limit); a longer album continues in a new one, starting
