@@ -51,6 +51,9 @@ final class SliceStore: @unchecked Sendable {
         var written = 0
         var readers: [Reader] = []
         var closed = false            // no more writing (frozen at a change of rate, or dropped)
+        /// Nothing past this frame goes to Roon (0.3.2): a change of clock sends the track back to its start, and what the
+        /// Music app played of it at the old rate must not reach Roon — the pause it needs can take two seconds (17:08:39).
+        var limit: Int?
         init(number: Int, path: String, rate: Double, frames: Int, info: [String: Any], follows: (Int, Int)?, directory: URL) {
             self.number = number; self.path = path; self.rate = rate; self.frames = max(1, frames)
             self.info = info; self.follows = follows
@@ -185,7 +188,12 @@ final class SliceStore: @unchecked Sendable {
     /// after the change of rate (12:57:01, Almost There), and what Music played in between went into the new run — the
     /// start of the track would have been heard twice. So at that next sound the run is cut back to the track's start too.
     private var restartAtTrackStart = false
-    func restartTrackAtNewRate() { lock.lock(); restartAtTrackStart = true; lock.unlock() }
+    func restartTrackAtNewRate() {
+        lock.lock(); defer { lock.unlock() }
+        restartAtTrackStart = true
+        // From now on nothing past the track's start goes to Roon (see Slice.limit).
+        if let c = current, !c.closed { c.limit = trackStart }
+    }
 
     /// The splice after a pause (see Splice): the end of the run to find again, the new sound so far, until when to collect,
     /// and how far the bridge sent the Music app back (the fallback when the end isn't found).
@@ -313,8 +321,11 @@ final class SliceStore: @unchecked Sendable {
                 Log.note("runs: \(c.number) — the track starts over: \(c.ms(c.written - trackStart)) ms played before the pause taken out")
                 try? c.writer?.truncate(atOffset: UInt64(trackStart * Self.bytesPerFrame))
                 c.written = trackStart
+                c.limit = nil
                 c.rateSince = min(c.rateSince, trackStart)
             }
+            // The clock didn't change after all (the same rate came back): Roon must not starve at the limit.
+            if restartAtTrackStart, let c = current, !c.closed, c.rate == rate { c.limit = nil }
             restartAtTrackStart = false
             data = pcm.subdata(in: (first * Self.bytesPerFrame)..<pcm.count)
             count = frames - first
@@ -352,6 +363,7 @@ final class SliceStore: @unchecked Sendable {
                     try? c.writer?.truncate(atOffset: 0); try? c.writer?.seekToEnd()
                     if !converted.isEmpty { try? c.writer?.write(contentsOf: converted) }
                     trackStart = Int(Double(trackStart) * rate / old)
+                    c.limit = nil
                     c.rate = rate
                     c.written = converted.count / Self.bytesPerFrame
                     c.rateSince = c.written
@@ -367,6 +379,7 @@ final class SliceStore: @unchecked Sendable {
                     // Back to the start of the track (TrackClock): the next run takes over where the track began.
                     let fromStart = restartAtTrackStart && c.rate != rate
                     let at = fromStart ? trackStart : c.written
+                    if fromStart { c.limit = at }
                     let left = fromStart ? (track?.durationMs ?? 1000) : max(1000, Int((remainingInTrackLocked() ?? 0) * 1000))
                     if let t = track { pendingRun = (Track(info: t.info, durationMs: left), (c.number, c.ms(at))) }
                     Log.note("runs: \(c.number) frozen at \(c.ms(at)) ms (\(c.rate != rate ? "rate \(Int(c.rate)) → \(Int(rate))" : "three hours")\(fromStart ? ", the track starts over" : ""))")
@@ -487,7 +500,7 @@ final class SliceStore: @unchecked Sendable {
         if r.offset >= s.bytes { r.connection.cancel(); return }
         // Held back: the last 0.4 s of an open run (see trimTail); a frozen run gives all it has.
         let held = s.closed ? 0 : max(0, Int(Self.holdBackSeconds * s.rate) - released)
-        let available = max(0, s.written - held) * Self.bytesPerFrame
+        let available = min(max(0, s.written - held), s.limit ?? Int.max) * Self.bytesPerFrame
         guard r.offset < available, let reader = s.reader else { return }
         let count = min(262_144, available - r.offset)
         try? reader.seek(toOffset: UInt64(r.offset))

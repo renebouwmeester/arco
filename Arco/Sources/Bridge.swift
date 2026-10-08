@@ -563,8 +563,10 @@ final class Bridge: ObservableObject {
         let playing = music.state == .playing
         Log.note("clock: \(track.title) — \(rate) Hz (\(how)): Arco \(Int(now)) → \(Int(target)) Hz\(back ? ", from the start" : "")")
         ownUntil = Date().addingTimeInterval(3)
-        if playing { music.pause() }
+        // Before the pause, which can take the Music app two seconds (17:08:39): from now on Roon gets nothing past the
+        // track's start.
         if back { store?.restartTrackAtNewRate() }
+        if playing { music.pause() }
         AudioDevices.setSampleRate(target, of: arco)
         try? await Task.sleep(for: .milliseconds(250))
         if back { music.seekToStart() }
