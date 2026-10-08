@@ -228,14 +228,14 @@ final class SliceStore: @unchecked Sendable {
         for r in c.readers { pump(c, r) }
     }
 
-    /// The last 0.8 s of a run are held back from Roon: room to take out the tail of a pause before anyone has read it.
+    /// The last 1.2 s of a run are held back from Roon: room to take out the tail of a pause before anyone has read it.
     /// (Roon plays seconds behind anyway.)
-    /// 0.8 s since 0.3.2 (was 0.4): the Music app's pause notification comes after up to 0.4 s of fade and silence, and
-    /// with 0.4 s held back only silence was left to drip — the run then ended in 0.12 s of silence, and the splice looked
-    /// for silence (16:58:43, best 0.000). Roon plays 0.4 s further behind for it.
-    private static let holdBackSeconds = 0.8
+    /// 1.2 s since 0.3.2 (was 0.4): the Music app's pause notification can come after up to 0.8 s of fade and silence
+    /// (17:02:43), and with less held back only silence was left — the run then ended in silence kept for the drip, a gap
+    /// a few seconds after resuming. Roon plays 0.8 s further behind for it.
+    private static let holdBackSeconds = 1.2
     private static let fadeSeconds = 0.08
-    private static let keepSeconds = 0.12
+    private static let keepSeconds = 0.03   // was 0.12: a few bytes wake Roon's reader; more is a gap after the splice
 
     /// Under the lock: the run's tail of silence, and Music's fade before it, taken out — as far as it is still held back.
     private func trimTail(_ c: Slice) {
