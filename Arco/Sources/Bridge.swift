@@ -556,7 +556,18 @@ final class Bridge: ObservableObject {
         AudioDevices.setSampleRate(target, of: arco)
         try? await Task.sleep(for: .milliseconds(250))
         if back { music.seekToStart() }
-        if playing { music.play() }
+        guard playing else { return }
+        music.play()
+        // Does it play? (8 Oct 16:42, Wildwood Flower after autoplay: the Music app carried out the pause a second late and
+        // swallowed the play right behind it — it stood paused at 0.36 s and Roon got a run without music.) Basso's way:
+        // look, and press play again — up to three times.
+        for attempt in 1...3 {
+            try? await Task.sleep(for: .milliseconds(800))
+            guard isOn, source === music, music.track?.id == track.id else { return }
+            if music.isPlayingNow() { return }
+            Log.note("clock: the Music app didn't play again — play (\(attempt))")
+            music.play()
+        }
     }
 
     /// Roon's supply: how far the stream is ahead of Roon. Roon plays a few seconds behind, and those seconds are what

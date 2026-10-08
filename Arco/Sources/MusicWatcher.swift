@@ -83,6 +83,12 @@ final class MusicWatcher: PlayerSource {
         return Double(text.replacingOccurrences(of: ",", with: "."))
     }
 
+    /// The player state asked directly (the notification can come a second late).
+    func isPlayingNow() -> Bool {
+        guard Self.isRunning, let text = AppleScript.run(#"tell application "Music" to get player state as string"#)?.stringValue else { return false }
+        return text == "playing"
+    }
+
     func seekToStart() { AppleScript.run(#"tell application "Music" to set player position to 0"#) }
 
     func play() { AppleScript.run(#"tell application "Music" to play"#) }
