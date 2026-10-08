@@ -43,8 +43,11 @@ struct MenuView: View {
                 content
             }
             Divider()
-            HStack {
-                LoginItemToggle()
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    LoginItemToggle()
+                    RateInMenuBarToggle()
+                }
                 Spacer()
                 if model.updater.available {
                     Button("Check for Updates…") { model.updater.checkForUpdates() }

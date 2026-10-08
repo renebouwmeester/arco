@@ -115,6 +115,13 @@ final class Bridge: ObservableObject {
         }
     }
     static var driverInstalled: Bool { AudioDevices.arco != nil }
+    /// A session in Roon, playing or paused: the menu bar shows the rate then.
+    var isSending: Bool {
+        switch phase {
+        case .starting, .playing, .paused: return true
+        default: return false
+        }
+    }
     /// Spotify as a source: in the code, off unless asked for (René, 8 Oct: Arco is Apple Music in Roon; Spotify goes to
     /// Roon by way of a Spotify Connect endpoint). `defaults write nl.renebouwmeester.arco SpotifySource -bool true`.
     static var spotifyEnabled: Bool { UserDefaults.standard.bool(forKey: "SpotifySource") }
