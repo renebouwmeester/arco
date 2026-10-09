@@ -326,7 +326,10 @@ final class SliceStore: @unchecked Sendable {
             }
             // The clock didn't change after all (the same rate came back): Roon must not starve at the limit.
             if restartAtTrackStart, let c = current, !c.closed, c.rate == rate { c.limit = nil }
-            restartAtTrackStart = false
+            // Not yet when the rate still has to change (9 Oct 20:14:58, Pasodoble: the Music app paused before the device
+            // changed, and the flag went here — one step before the freeze below needed it; the run froze 68 ms into the
+            // track instead of at its start). The freeze clears it.
+            if let c = current, !c.closed, c.rate != rate {} else { restartAtTrackStart = false }
             data = pcm.subdata(in: (first * Self.bytesPerFrame)..<pcm.count)
             count = frames - first
         }
@@ -378,6 +381,7 @@ final class SliceStore: @unchecked Sendable {
                     current = nil
                     // Back to the start of the track (TrackClock): the next run takes over where the track began.
                     let fromStart = restartAtTrackStart && c.rate != rate
+                    restartAtTrackStart = false
                     let at = fromStart ? trackStart : c.written
                     if fromStart { c.limit = at }
                     let left = fromStart ? (track?.durationMs ?? 1000) : max(1000, Int((remainingInTrackLocked() ?? 0) * 1000))
