@@ -148,7 +148,10 @@ final class FormatLog {
             while Date() < until, entries.isEmpty { try? await Task.sleep(for: .milliseconds(100)) }
             return entries.last.map { ($0.rate, "the Music app's log, \($0.format)") }
         case .natural:
-            if let e = entries.last(where: { $0.at <= change && $0.at > (previous ?? .distantPast) }) {
+            // Not the lines of the previous track's own first seconds (9 Oct, The Theory of Everything: the start's own
+            // line was taken as the next track's, loaded ahead — right by chance, both at 96).
+            let since = (previous ?? .distantPast).addingTimeInterval(Self.wait)
+            if let e = entries.last(where: { $0.at <= change && $0.at > since }) {
                 return (e.rate, "the Music app's log, \(e.format) loaded ahead")
             }
             return seenAny ? same : nil
