@@ -481,6 +481,9 @@ final class Bridge: ObservableObject {
                 // released it five seconds later — and the restart then took five seconds; paused at once, the KEF paused
                 // at once and resumed quickly (21:26:30, 21:34:26) — as with Qobuz.
                 store?.pauseWriting()
+                // The line the Music app wrote for this pause (just before it) is about this track (see FormatLog).
+                formats.forget(recent: 1)
+                formats.quiet(for: 1)
                 pendingPause?.cancel()
                 pendingPause = Task { @MainActor [weak self] in
                     try? await Task.sleep(for: .milliseconds(200))
@@ -582,35 +585,41 @@ final class Bridge: ObservableObject {
               at.timeIntervalSince(change) < 20, let track = music.track, let arco = arcoDevice else { return }
         clock.remember(rate, for: track)
         guard music.state == .playing, AudioDevices.bestRate(Double(rate), of: arco) != AudioDevices.sampleRate(of: arco) else { return }
-        Log.note("clock: \(track.title) — the Music app's log now says \(rate) Hz (it started otherwise): correcting")
+        // Within 3 s of the change (9 Oct): back to the track's start — Roon plays 5–7 s behind and hasn't had it. Asked at
+        // once, before the Music app may change the device itself (8 Oct, Traces of a Song: 0.65 s after its line — the
+        // run was then frozen in the middle of the track, and setClock found Arco "there already").
+        let early = at.timeIntervalSince(change) < FormatLog.wait && music.position() < 3
+        if early { store?.restartTrackAtNewRate() }
+        Log.note("clock: \(track.title) — the Music app's log now says \(rate) Hz (it started otherwise): correcting\(early ? ", from the track's start" : "")")
         Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.setClock(rate, for: track, how: "the Music app's log, late", fromStart: self.music.position() < 3)
+            await self.setClock(rate, for: track, how: "the Music app's log, late", fromStart: early, evenIfThere: early)
         }
     }
 
     /// Basso's way for a change of clock: pause the Music app, set the rate, back to the start of the track if it only
     /// just began, play. The pause doesn't reach Roon (a change of rate within 0.2 s of it: "Music changes the clock").
-    private func setClock(_ rate: Int, for track: SourceTrack, how: String, fromStart: Bool) async {
+    private func setClock(_ rate: Int, for track: SourceTrack, how: String, fromStart: Bool, evenIfThere: Bool = false) async {
         guard let arco = arcoDevice, let now = AudioDevices.sampleRate(of: arco) else { return }
         let target = AudioDevices.bestRate(Double(rate), of: arco)
         if target != Double(rate) {
             Log.note("clock: \(rate) Hz isn't offered by the Arco device (\(AudioDevices.availableRates(of: arco).map { String(Int($0)) }.joined(separator: ", "))) — \(Int(target)) instead")
         }
-        guard target != now else { Log.note("clock: \(track.title) — \(rate) Hz (\(how)), Arco is there already"); return }
+        // `evenIfThere`: the Music app set the device itself, but the track must still start over (see lateLossless).
+        guard target != now || evenIfThere else { Log.note("clock: \(track.title) — \(rate) Hz (\(how)), Arco is there already"); return }
         // Never two changes for one track within two seconds: a reading that keeps changing mustn't make Music stumble.
         if let last = lastClockChange, last.id == track.id, Date().timeIntervalSince(last.at) < 2 { return }
         lastClockChange = (track.id, Date())
         let back = fromStart && music.position() < 3
         let playing = music.state == .playing
-        Log.note("clock: \(track.title) — \(rate) Hz (\(how)): Arco \(Int(now)) → \(Int(target)) Hz\(back ? ", from the start" : "")")
+        Log.note("clock: \(track.title) — \(rate) Hz (\(how)): \(target == now ? "the Music app set Arco to it itself" : "Arco \(Int(now)) → \(Int(target)) Hz")\(back ? ", from the start" : "")")
         ownUntil = Date().addingTimeInterval(3)
         formats.quiet(for: 2.5)   // the queue the Music app sets up again now is about this track (see FormatLog)
         // Before the pause, which can take the Music app two seconds (17:08:39): from now on Roon gets nothing past the
         // track's start.
         if back { store?.restartTrackAtNewRate() }
         if playing { music.pause() }
-        AudioDevices.setSampleRate(target, of: arco)
+        if target != now { AudioDevices.setSampleRate(target, of: arco) }
         try? await Task.sleep(for: .milliseconds(250))
         if back { music.seekToStart() }
         guard playing else { return }

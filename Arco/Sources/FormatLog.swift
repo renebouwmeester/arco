@@ -26,6 +26,16 @@
 // and set up 44.1 lossless only 13 s later; "the same" kept 96 over AppleScript's right 44.1, and the late line cut the
 // stream. So a skip without a line asks AppleScript; the late lossless line still corrects it.
 // Lines in the seconds after a resume or after Arco's own change of clock are about the track that already plays.
+//
+// The measurement of 9 Oct (Arco 0.3.3 on Gaylord, a meter beside it, René playing the scenarios) settled the rest:
+// - a natural change at the same rate: no line (autoplay too); at another rate: the lossless line 60–100 s ahead;
+// - a skip or a start: the lossless line from 0.05 s before to 0.9 s after (once, 8 Oct, Moon River: AAC first and
+//   lossless 13 s later); AppleScript names the rate of the queue that plays — the AAC one in the first ~0.8 s;
+// - a pause: the Music app sets up its queue again AT the pause, 0.15 s before it says it paused — a line of the track
+//   that plays, which must never count as the next track's, loaded ahead (see forget(recent:)).
+// So a skip or a start waits up to 3 s; a pause forgets the lines of the last second; and a lossless line of another
+// rate within 3 s of a change (8 Oct, Traces of a Song: no line ahead, one 1.8 s after) still cuts at the track's
+// start (Bridge) — Roon plays 5–7 s behind and hasn't had it yet.
 import Foundation
 
 @MainActor
@@ -87,6 +97,16 @@ final class FormatLog {
     /// Lines from now on (for `seconds`) are about the track that already plays.
     func quiet(for seconds: Double) { quietUntil = max(quietUntil, Date().addingTimeInterval(seconds)) }
 
+    /// The Music app paused: the lines of the last `seconds` were its queue set up again for the track that plays (it
+    /// writes one just before it says it paused) — never the next track's.
+    func forget(recent seconds: Double) {
+        let since = Date().addingTimeInterval(-seconds)
+        entries.removeAll { $0.at > since }
+    }
+
+    /// How long a skip or a start waits for its lossless line.
+    static let wait: TimeInterval = 3
+
     private func received(_ d: Data) {
         buffer.append(d)
         while let nl = buffer.firstIndex(of: 0x0A) {
@@ -124,7 +144,7 @@ final class FormatLog {
         switch kind {
         case .start:
             if let e = entries.last { return (e.rate, "the Music app's log, \(e.format)") }
-            let until = change.addingTimeInterval(2.5)
+            let until = change.addingTimeInterval(Self.wait)
             while Date() < until, entries.isEmpty { try? await Task.sleep(for: .milliseconds(100)) }
             return entries.last.map { ($0.rate, "the Music app's log, \($0.format)") }
         case .natural:
@@ -133,7 +153,7 @@ final class FormatLog {
             }
             return seenAny ? same : nil
         case .skip:
-            let until = change.addingTimeInterval(2.5)
+            let until = change.addingTimeInterval(Self.wait)
             while Date() < until {
                 if let e = entries.first(where: { $0.at > change.addingTimeInterval(-0.3) }) {
                     return (e.rate, "the Music app's log, \(e.format)")
