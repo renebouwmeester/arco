@@ -161,7 +161,9 @@ final class FormatLog {
         case .skip:
             let until = change.addingTimeInterval(Self.wait)
             while Date() < until {
-                if let e = entries.first(where: { $0.at > change.addingTimeInterval(-0.3) }) {
+                // From 1 s before: the line can come before Arco sees the skip (9 Oct, End Of Summer: 0.4 s before — with
+                // 0.3 s it was missed, Arco waited 3 s and took AppleScript). A pause's line is forgotten (forget(recent:)).
+                if let e = entries.first(where: { $0.at > change.addingTimeInterval(-1) }) {
                     return (e.rate, "the Music app's log, \(e.format)")
                 }
                 try? await Task.sleep(for: .milliseconds(100))

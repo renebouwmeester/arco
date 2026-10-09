@@ -304,7 +304,11 @@ final class Bridge: ObservableObject {
             self.ownUntil = Date().addingTimeInterval(3)
             var answer = await s.play(track: String(slice.number), url: url, info: slice.info)
             Log.note("play run \(slice.number) (\(Self.lines(slice.info)?.title ?? "?")): Roon answered \(answer)")
-            if answer == "Timeout", self.session === s, self.store?.isCurrent(slice) == true {
+            // A MediaError for a run of a running session (9 Oct 20:27:10, a skip: Roon still closing the dropped run
+            // refused the new one at once, and the zone stayed silent): once more, a second later.
+            let retry = answer == "Timeout" || (answer == "MediaError" && self.phase != .starting)
+            if retry, self.session === s, self.store?.isCurrent(slice) == true {
+                if answer == "MediaError" { try? await Task.sleep(for: .seconds(1)) }
                 let fresh = url + "?n=\(Int(Date().timeIntervalSince1970 * 1000))"
                 answer = await s.play(track: String(slice.number), url: fresh, info: slice.info)
                 Log.note("play run \(slice.number) again: Roon answered \(answer)")
