@@ -104,6 +104,9 @@ final class FormatLog {
         entries.removeAll { $0.at > since }
     }
 
+    /// The answer for "no line: the same format" — the bridge allows a late correction only briefly then.
+    static let sameHow = "no new format in the Music app's log — the same as before"
+
     /// How long a skip or a start waits for its lossless line.
     static let wait: TimeInterval = 3
 
@@ -140,7 +143,7 @@ final class FormatLog {
     /// same format". Nil: the log can't say (AppleScript then).
     func rate(_ kind: Change, change: Date, previous: Date?, current: Int) async -> (rate: Int, how: String)? {
         guard !unavailable, process != nil else { return nil }
-        let same = (current, "no new format in the Music app's log — the same as before")
+        let same = (current, Self.sameHow)
         switch kind {
         case .start:
             if let e = entries.last { return (e.rate, "the Music app's log, \(e.format)") }

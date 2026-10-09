@@ -70,6 +70,11 @@ final class Bridge: ObservableObject {
     /// The Music app's own log of the formats it sets up (0.3.3, see FormatLog) — first source of a track's rate.
     private let formats = FormatLog()
     private var lastChangeAt: Date?
+    /// Until when a lossless line may still correct the clock of this track (9 Oct): not once its rate came from a
+    /// lossless line — later lines are the next track's, loaded ahead (20:06:53: after a restart mid-track, the next
+    /// track's 44.1 line was taken for a correction, and a 96 track went on at 44.1); 3 s after a natural change that
+    /// had no line (Traces of a Song: 1.8 s); 20 s when AppleScript had to answer for a skip or a start (Moon River: 13 s).
+    private var correctable: (trackID: String, until: Date)?
     private var lastClockChange: (id: String, at: Date)?
     private var coverNumber = 0
     private static let coverRun = String(UInt64.random(in: 0...UInt64.max), radix: 36)
@@ -543,6 +548,7 @@ final class Bridge: ObservableObject {
         guard TrackClock.enabled, source === music, let arco = arcoDevice else { return }
         let change = Date(), previous = lastChangeAt
         lastChangeAt = change
+        correctable = nil
         Task { @MainActor [weak self] in
             guard let self else { return }
             let current = { self.source === self.music && self.music.track?.id == track.id && self.isOn }
@@ -550,6 +556,10 @@ final class Bridge: ObservableObject {
             var read: (rate: Int, how: String)?
             let now = Int(AudioDevices.sampleRate(of: arco) ?? 0)
             let fromLog = await self.formats.rate(kind, change: change, previous: previous, current: now)
+            if current() {
+                if fromLog == nil { self.correctable = (track.id, change.addingTimeInterval(20)) }
+                else if fromLog?.how == FormatLog.sameHow { self.correctable = (track.id, change.addingTimeInterval(FormatLog.wait)) }
+            }
             if let fromLog {
                 read = fromLog
                 if let s = self.music.sampleRate(), s > 0, Int(s) != fromLog.rate {
@@ -582,7 +592,8 @@ final class Bridge: ObservableObject {
     /// real format later. Up to 20 s after the change of track, set the clock after all, and remember the track's rate.
     private func lateLossless(at: Date, rate: Int) {
         guard TrackClock.enabled, isOn, source === music, let change = lastChangeAt, at >= change,
-              at.timeIntervalSince(change) < 20, let track = music.track, let arco = arcoDevice else { return }
+              let track = music.track, let arco = arcoDevice,
+              let c = correctable, c.trackID == track.id, at <= c.until else { return }
         clock.remember(rate, for: track)
         guard music.state == .playing, AudioDevices.bestRate(Double(rate), of: arco) != AudioDevices.sampleRate(of: arco) else { return }
         // Within 3 s of the change (9 Oct): back to the track's start — Roon plays 5–7 s behind and hasn't had it. Asked at
