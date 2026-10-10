@@ -59,6 +59,10 @@ final class FormatLog {
     private(set) var next: Next?
     /// Called when the next track, its length or its rate becomes known.
     var onNext: ((Next) -> Void)?
+    /// The rate the device runs at now (the bridge): a line at that rate is never the next track's — at the same rate the
+    /// Music app loads the next track without a line (9 Oct) — but the current track's own queue set up again: a pause, a
+    /// seek, a resume (17:52:42 and 17:53:03, La Source at 88.2 before Folie À Deux at 96).
+    var deviceRate: (() -> Int)?
     private var titles: [String: String] = [:]
     private var lengths: [String: Int] = [:]
     /// How the Music app went to its current item (0.4 licht): "setTargetContentItemID:<item> source:NaturalTransition" for a
@@ -143,7 +147,8 @@ final class FormatLog {
     /// 0.4 licht: a lossless line at `at` is the next track's (loaded ahead) when the next track was named before it, isn't
     /// the one that plays, and the line isn't in the first seconds of the current track (its own).
     func isNextTracks(at: Date, playing title: String?) -> Bool {
-        guard let n = next, at > n.at, let t = n.title, at.timeIntervalSince(target?.at ?? .distantPast) > Self.ownLines else { return false }
+        guard let n = next, at > n.at, let t = n.title, at.timeIntervalSince(target?.at ?? .distantPast) > Self.ownLines,
+              n.rate != nil else { return false }
         return t != title
     }
 
@@ -197,7 +202,8 @@ final class FormatLog {
             // A line after the next track was named, of another rate than its last: that track's rate (0.4) — not in the
             // first seconds after a change of track (17:47:17, Helsinki after a skip: its own lossless line came 3 s after
             // the next one was named).
-            if var n = next, now > n.at, n.rate != rate, now.timeIntervalSince(target?.at ?? .distantPast) > Self.ownLines {
+            if var n = next, now > n.at, n.rate != rate, now.timeIntervalSince(target?.at ?? .distantPast) > Self.ownLines,
+               rate != deviceRate?() {
                 n.rate = rate; n.rateAt = now; next = n
                 Log.note("next: \(n.title ?? n.item) — \(rate) Hz (\(format), the line after it was named)")
                 onNext?(n)

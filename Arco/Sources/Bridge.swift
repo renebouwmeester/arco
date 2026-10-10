@@ -98,6 +98,7 @@ final class Bridge: ObservableObject {
             }
         }
         formats.onLossless = { [weak self] at, rate in self?.lateLossless(at: at, rate: rate) }
+        formats.deviceRate = { [weak self] in Int(self?.capture.rate ?? 0) }
         let holder = storeHolder, capture = capture
         capture.onAudio = { pcm, frames, firstSound in holder.write(pcm, frames, firstSound, rate: capture.rate) }
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
