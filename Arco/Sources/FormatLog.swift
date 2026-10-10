@@ -53,6 +53,8 @@ final class FormatLog {
         var lengthMs: Int?
         var rate: Int?
         let at: Date
+        /// When its rate was taken (a pause's line can be undone, see forget(recent:)).
+        var rateAt: Date?
     }
     private(set) var next: Next?
     /// Called when the next track, its length or its rate becomes known.
@@ -122,6 +124,30 @@ final class FormatLog {
     func forget(recent seconds: Double) {
         let since = Date().addingTimeInterval(-seconds)
         entries.removeAll { $0.at > since }
+        // The pause's line, taken for the next track's rate: undone (it is the track that plays).
+        if var n = next, let at = n.rateAt, at > since {
+            n.rate = nil; n.rateAt = nil; next = n
+            Log.note("next: \(n.title ?? n.item) — the line after it was the pause's, not its rate")
+        }
+    }
+
+    /// 0.4 licht: the Music app named this track as the next one — its rate as named then (nil: the same as before).
+    func named(_ title: String) -> Next? {
+        guard let n = next, n.title == title else { return nil }
+        return n
+    }
+
+    /// 0.4 licht: a lossless line at `at` is the next track's (loaded ahead) when the next track was named before it and
+    /// isn't the one that plays.
+    func isNextTracks(at: Date, playing title: String?) -> Bool {
+        guard let n = next, at > n.at, let t = n.title else { return false }
+        return t != title
+    }
+
+    /// 0.4 licht: a track's length as the Music app loaded it.
+    func length(of title: String) -> Int? {
+        guard let item = titles.first(where: { $0.value == title })?.key else { return nil }
+        return lengths[item]
     }
 
     /// The answer for "no line: the same format" — the bridge allows a late correction only briefly then.
@@ -154,7 +180,7 @@ final class FormatLog {
             seenAny = true
             // A line after the next track was named, of another rate than its last: that track's rate (0.4).
             if var n = next, now > n.at, n.rate != rate {
-                n.rate = rate; next = n
+                n.rate = rate; n.rateAt = now; next = n
                 Log.note("next: \(n.title ?? n.item) — \(rate) Hz (\(format), the line after it was named)")
                 onNext?(n)
             }
