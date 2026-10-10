@@ -153,7 +153,10 @@ final class FormatLog {
     /// 0.4 licht: how the Music app went to this track, if its log said so in the last few seconds — true: it followed
     /// naturally; false: a jump. Nil: the log didn't say (the estimate of time left decides).
     func transition(to title: String) -> Bool? {
-        guard let t = target, Date().timeIntervalSince(t.at) < 3, titles[t.item] == title else { return nil }
+        // The item's title may be unknown (the Music app set up its items before Arco listened, 17:49:51): then the moment
+        // alone — a change within three seconds of the log's word is that change.
+        guard let t = target, Date().timeIntervalSince(t.at) < 3 else { return nil }
+        if let known = titles[t.item], known != title { return nil }
         return t.natural
     }
 
