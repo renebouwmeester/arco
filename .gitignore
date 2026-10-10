@@ -7,3 +7,5 @@ DerivedData/
 .DS_Store
 *.xcuserstate
 build.log
+build-rel/
+build-rel.log

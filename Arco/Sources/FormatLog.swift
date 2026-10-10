@@ -61,6 +61,9 @@ final class FormatLog {
     var onNext: ((Next) -> Void)?
     private var titles: [String: String] = [:]
     private var lengths: [String: Int] = [:]
+    /// How the Music app went to its current item (0.4 licht): "setTargetContentItemID:<item> source:NaturalTransition" for a
+    /// track that simply followed, "Redirect"/other for a jump (a skip, a play) — its own word, no estimate of time left.
+    private var target: (item: String, natural: Bool, at: Date)?
     private struct Entry { let at: Date; let rate: Int; let format: String }
     private var entries: [Entry] = []
     private var process: Process?
@@ -80,7 +83,7 @@ final class FormatLog {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/log")
         p.arguments = ["stream", "--style", "ndjson", "--predicate",
-                       #"process == "Music" AND (eventMessage CONTAINS "Creating AudioQueue with format" OR eventMessage CONTAINS "ITMPAVItemCount INIT" OR eventMessage CONTAINS "isInContiguousAlbum" OR eventMessage CONTAINS "loadedTimeRanges")"#]
+                       #"process == "Music" AND (eventMessage CONTAINS "Creating AudioQueue with format" OR eventMessage CONTAINS "ITMPAVItemCount INIT" OR eventMessage CONTAINS "isInContiguousAlbum" OR eventMessage CONTAINS "loadedTimeRanges" OR eventMessage CONTAINS "setTargetContentItemID")"#]
         let out = Pipe(), err = Pipe()
         p.standardOutput = out
         p.standardError = err
@@ -137,11 +140,21 @@ final class FormatLog {
         return n
     }
 
-    /// 0.4 licht: a lossless line at `at` is the next track's (loaded ahead) when the next track was named before it and
-    /// isn't the one that plays.
+    /// 0.4 licht: a lossless line at `at` is the next track's (loaded ahead) when the next track was named before it, isn't
+    /// the one that plays, and the line isn't in the first seconds of the current track (its own).
     func isNextTracks(at: Date, playing title: String?) -> Bool {
-        guard let n = next, at > n.at, let t = n.title else { return false }
+        guard let n = next, at > n.at, let t = n.title, at.timeIntervalSince(target?.at ?? .distantPast) > Self.ownLines else { return false }
         return t != title
+    }
+
+    /// The first seconds of a track (after a skip or a start the Music app sets up its own lossless queue then).
+    static let ownLines: TimeInterval = 5
+
+    /// 0.4 licht: how the Music app went to this track, if its log said so in the last few seconds — true: it followed
+    /// naturally; false: a jump. Nil: the log didn't say (the estimate of time left decides).
+    func transition(to title: String) -> Bool? {
+        guard let t = target, Date().timeIntervalSince(t.at) < 3, titles[t.item] == title else { return nil }
+        return t.natural
     }
 
     /// 0.4 licht: a track's length as the Music app loaded it.
@@ -178,8 +191,10 @@ final class FormatLog {
             if now < quietUntil { continue }
             entries.append(Entry(at: now, rate: rate, format: format))
             seenAny = true
-            // A line after the next track was named, of another rate than its last: that track's rate (0.4).
-            if var n = next, now > n.at, n.rate != rate {
+            // A line after the next track was named, of another rate than its last: that track's rate (0.4) — not in the
+            // first seconds after a change of track (17:47:17, Helsinki after a skip: its own lossless line came 3 s after
+            // the next one was named).
+            if var n = next, now > n.at, n.rate != rate, now.timeIntervalSince(target?.at ?? .distantPast) > Self.ownLines {
                 n.rate = rate; n.rateAt = now; next = n
                 Log.note("next: \(n.title ?? n.item) — \(rate) Hz (\(format), the line after it was named)")
                 onNext?(n)
@@ -217,6 +232,12 @@ final class FormatLog {
                         onNext?(n)
                     }
                 }
+            }
+            return true
+        }
+        if m.contains("setTargetContentItemID") {
+            if let g = groups(#"setTargetContentItemID:(?:PLACEHOLDER=)?(\#(id)) source:(\w+)"#), g.count == 2 {
+                target = (g[0], g[1] == "NaturalTransition", Date())
             }
             return true
         }

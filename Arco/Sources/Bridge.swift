@@ -473,7 +473,13 @@ final class Bridge: ObservableObject {
                 // the end too (the estimate of the first track of a session was 6 s off); further from it, it is still a
                 // skip (to the next track: Roon should follow at once, not after its lag).
                 let named = source === music ? formats.named(track.title) : nil
-                let natural = left < 8 || (named != nil && left < 15)
+                // The Music app's own word first (setTargetContentItemID … source:NaturalTransition, 17:47:14 — after a
+                // seek Arco thought 142 s were left and took it for a skip).
+                let said = source === music ? formats.transition(to: track.title) : nil
+                let natural = said ?? (left < 8 || (named != nil && left < 15))
+                if let said, said != (left < 8) {
+                    Log.note("next track: \(track.title) — the Music app says \(said ? "a natural change" : "a jump") (\(String(format: "%.1f", left)) s were left by the estimate)")
+                }
                 let info = makeInfo(track)
                 // No length in Music's notification (a streamed track, 7 Oct 22:06: the Aria counted as one second, and
                 // the next "next" looked like a natural end): the length the Music app's log gave (0.4 licht), else ask
