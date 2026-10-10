@@ -36,10 +36,29 @@
 // So a skip or a start waits up to 3 s; a pause forgets the lines of the last second; and a lossless line of another
 // rate within 3 s of a change (8 Oct, Traces of a Song: no line ahead, one 1.8 s after) still cuts at the track's
 // start (Bridge) — Roon plays 5–7 s behind and hasn't had it yet.
+//
+// 0.4 (10 Oct 2026, see docs/QUEUE.md): the Music app also writes the NEXT track to its log when the current one begins —
+// its item and title ("ITMPAVItemCount INIT … (177582::177595) Title"), which item is next and its album ("isInContiguousAlbum
+// … Next song: contentIdentifier=177582::177595 … storeAdamID=…"), and its length ("loadedTimeRanges 15.00 of 245.38").
+// A lossless line that comes after the next track was named is that track's rate. Step 1: named in Arco's log only.
 import Foundation
 
 @MainActor
 final class FormatLog {
+    /// The next track, as the Music app names it (0.4). `rate`: from a lossless line after it was named; nil — the same.
+    struct Next: Equatable {
+        let item: String
+        let title: String?
+        let album: String
+        var lengthMs: Int?
+        var rate: Int?
+        let at: Date
+    }
+    private(set) var next: Next?
+    /// Called when the next track, its length or its rate becomes known.
+    var onNext: ((Next) -> Void)?
+    private var titles: [String: String] = [:]
+    private var lengths: [String: Int] = [:]
     private struct Entry { let at: Date; let rate: Int; let format: String }
     private var entries: [Entry] = []
     private var process: Process?
@@ -59,7 +78,7 @@ final class FormatLog {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/log")
         p.arguments = ["stream", "--style", "ndjson", "--predicate",
-                       #"process == "Music" AND eventMessage CONTAINS "Creating AudioQueue with format""#]
+                       #"process == "Music" AND (eventMessage CONTAINS "Creating AudioQueue with format" OR eventMessage CONTAINS "ITMPAVItemCount INIT" OR eventMessage CONTAINS "isInContiguousAlbum" OR eventMessage CONTAINS "loadedTimeRanges")"#]
         let out = Pipe(), err = Pipe()
         p.standardOutput = out
         p.standardError = err
@@ -92,6 +111,7 @@ final class FormatLog {
         process = nil
         entries = []
         seenAny = false
+        next = nil; titles = [:]; lengths = [:]
     }
 
     /// Lines from now on (for `seconds`) are about the track that already plays.
@@ -116,8 +136,9 @@ final class FormatLog {
             let line = buffer.subdata(in: buffer.startIndex..<nl)
             buffer.removeSubrange(buffer.startIndex...nl)
             guard let json = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-                  let message = json["eventMessage"] as? String,
-                  let r = message.range(of: #"sampleRate:(\d+)"#, options: .regularExpression),
+                  let message = json["eventMessage"] as? String else { continue }
+            if nextLine(message) { continue }
+            guard let r = message.range(of: #"sampleRate:(\d+)"#, options: .regularExpression),
                   let rate = Int(message[r].filter(\.isNumber)) else { continue }
             var format = "?"
             if let f = message.range(of: #"format:'[^']+'"#, options: .regularExpression) {
@@ -131,10 +152,58 @@ final class FormatLog {
             if now < quietUntil { continue }
             entries.append(Entry(at: now, rate: rate, format: format))
             seenAny = true
+            // A line after the next track was named, of another rate than its last: that track's rate (0.4).
+            if var n = next, now > n.at, n.rate != rate {
+                n.rate = rate; next = n
+                Log.note("next: \(n.title ?? n.item) — \(rate) Hz (\(format), the line after it was named)")
+                onNext?(n)
+            }
             onLossless?(now, rate)
             if entries.count > 50 { entries.removeFirst(entries.count - 50) }
             Log.note("format log: the Music app set up \(format) at \(rate) Hz")
         }
+    }
+
+    /// The lines about the next track (0.4). True when the message was one of them.
+    private func nextLine(_ m: String) -> Bool {
+        func groups(_ pattern: String) -> [String]? {
+            guard let re = try? NSRegularExpression(pattern: pattern),
+                  let x = re.firstMatch(in: m, range: NSRange(m.startIndex..., in: m)) else { return nil }
+            return (1..<x.numberOfRanges).compactMap { Range(x.range(at: $0), in: m).map { String(m[$0]) } }
+        }
+        // An item id; a Play Next one carries a plus (177604+177691::177693).
+        let id = #"[\d+]+::\d+"#
+        if m.contains("ITMPAVItemCount INIT") {
+            if let g = groups(#"\((\#(id))\) (.*)'\s*$"#), g.count == 2, g[1] != "(null)" {
+                titles[g[0]] = g[1]
+                if titles.count > 400 { titles.removeAll() }
+            }
+            return true
+        }
+        if m.contains("loadedTimeRanges") {
+            if let g = groups(#"\((\#(id))\) .*? loadedTimeRanges [\d.]+ of ([\d.]+)"#), g.count == 2, let s = Double(g[1]), s > 0 {
+                let ms = Int(s * 1000)
+                if lengths[g[0]] == nil {
+                    lengths[g[0]] = ms
+                    if var n = next, n.item == g[0], n.lengthMs == nil {
+                        n.lengthMs = ms; next = n
+                        Log.note("next: \(n.title ?? n.item) — \(ms / 1000) s long")
+                        onNext?(n)
+                    }
+                }
+            }
+            return true
+        }
+        if m.contains("isInContiguousAlbum") {
+            guard let g = groups(#"Next song: contentIdentifier=(\#(id)).*?storeAdamID=(\d+)"#), g.count == 2 else { return true }
+            if next?.item == g[0] { return true }
+            let n = Next(item: g[0], title: titles[g[0]], album: g[1], lengthMs: lengths[g[0]], rate: nil, at: Date())
+            next = n
+            Log.note("next: the Music app names \(n.title ?? n.item) (album \(n.album))\(n.lengthMs.map { ", \($0 / 1000) s" } ?? "")")
+            onNext?(n)
+            return true
+        }
+        return false
     }
 
     enum Change { case start, natural, skip }
