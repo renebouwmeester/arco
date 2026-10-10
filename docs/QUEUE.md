@@ -72,3 +72,14 @@ minute ahead); none means the same rate. The guesswork of timing windows (Format
 2. SliceStore: track mode (declared length, the cut, the overflow into the next slice).
 3. Bridge: queue the next slice, re-queue on changes, the fallback.
 4. The scenarios, with the meter; then the default and the release notes.
+
+## Outcome (10 Oct, ~17:00) — the queue stays a run
+
+Tried on the dev build (66d4dbb, QueueMode on): the first slice of a session, declared at its track's length (Bað, 192 kHz,
+174.7 MB), stalled in Roon two seconds in — Roon's file cache took it for a file to download ("FTMSI-B got length …
+174,7 MBytes", then "[zoneplayer] stopped"), the KEF waited, Roon's time crept on without sound. A run, declared at
+gigabytes, Roon follows as a stream. And Basso's Roon zone showed on 8 Oct what a queued slice needs: "poor connection
+kbps:1277 (min:3072) → couldn't queue URL" — Roon wants a queued track faster than real time, which music being played
+can never be. Knowing the next track ahead doesn't change Roon's rule. So the runs stay; the next-track lines go into the
+run's own guesswork instead (branch `licht`: the rate of the next track named, a late line that is the next track's never
+corrects the current one, the length, a natural change recognised by the item). This branch stays as the record.
