@@ -83,3 +83,14 @@ kbps:1277 (min:3072) → couldn't queue URL" — Roon wants a queued track faste
 can never be. Knowing the next track ahead doesn't change Roon's rule. So the runs stay; the next-track lines go into the
 run's own guesswork instead (branch `licht`: the rate of the next track named, a late line that is the next track's never
 corrects the current one, the length, a natural change recognised by the item). This branch stays as the record.
+
+## Second retest at 96 kHz (11 Oct, 22:05–22:07, branch `wachtrij2` on 0.3.6) — Roon's rule, for good
+
+On 0.3.6 (no Nagle, no trickle) and with the timing fixed (the following track waits until Roon plays the slice being
+written — "queue: … waits — Roon is in slice 1, not yet in 2", 22:07:12): the cut worked (22:07:10, the Music app's
+change a second later confirmed the queued track), nothing replaced Roon's queue slot — and still Roon stopped at the end
+of slice 1. Roon's log: the queued item opened at once (22:05:44, "Queueing"), got its first bytes at the cut
+("poor connection kbps:206,0 (min:3072,0)", "accessTimeout:True"), was at "2% buf" when slice 1 ended, and then
+"BufferingTrack == NextTrack during ClearQueuedMedia, setting _stop_on_next_track_transition" → StoppedEndOfMediaNatural.
+Roon wants the queued track buffered ahead by the transition; a live source has seven seconds of it then. Not Arco's to
+change. The queue stays shelved; the runs (0.3.6) are the way.
