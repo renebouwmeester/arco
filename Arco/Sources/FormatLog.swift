@@ -37,15 +37,15 @@
 // rate within 3 s of a change (8 Oct, Traces of a Song: no line ahead, one 1.8 s after) still cuts at the track's
 // start (Bridge) — Roon plays 5–7 s behind and hasn't had it yet.
 //
-// 0.4 (10 Oct 2026, see docs/QUEUE.md): the Music app also writes the NEXT track to its log when the current one begins —
+// 0.3.5 (10 Oct 2026, see docs/QUEUE.md): the Music app also writes the NEXT track to its log when the current one begins —
 // its item and title ("ITMPAVItemCount INIT … (177582::177595) Title"), which item is next and its album ("isInContiguousAlbum
 // … Next song: contentIdentifier=177582::177595 … storeAdamID=…"), and its length ("loadedTimeRanges 15.00 of 245.38").
-// A lossless line that comes after the next track was named is that track's rate. Step 1: named in Arco's log only.
+// A lossless line that comes after the next track was named is that track's rate (not one at the rate that plays, not in a track's first seconds).
 import Foundation
 
 @MainActor
 final class FormatLog {
-    /// The next track, as the Music app names it (0.4). `rate`: from a lossless line after it was named; nil — the same.
+    /// The next track, as the Music app names it (0.3.5). `rate`: from a lossless line after it was named; nil — the same.
     struct Next: Equatable {
         let item: String
         let title: String?
@@ -65,7 +65,7 @@ final class FormatLog {
     var deviceRate: (() -> Int)?
     private var titles: [String: String] = [:]
     private var lengths: [String: Int] = [:]
-    /// How the Music app went to its current item (0.4 licht): "setTargetContentItemID:<item> source:NaturalTransition" for a
+    /// How the Music app went to its current item (0.3.5): "setTargetContentItemID:<item> source:NaturalTransition" for a
     /// track that simply followed, "Redirect"/other for a jump (a skip, a play) — its own word, no estimate of time left.
     private var target: (item: String, natural: Bool, at: Date)?
     private struct Entry { let at: Date; let rate: Int; let format: String }
@@ -138,13 +138,13 @@ final class FormatLog {
         }
     }
 
-    /// 0.4 licht: the Music app named this track as the next one — its rate as named then (nil: the same as before).
+    /// 0.3.5: the Music app named this track as the next one — its rate as named then (nil: the same as before).
     func named(_ title: String) -> Next? {
         guard let n = next, n.title == title else { return nil }
         return n
     }
 
-    /// 0.4 licht: a lossless line at `at` is the next track's (loaded ahead) when the next track was named before it, isn't
+    /// 0.3.5: a lossless line at `at` is the next track's (loaded ahead) when the next track was named before it, isn't
     /// the one that plays, and the line isn't in the first seconds of the current track (its own).
     func isNextTracks(at: Date, playing title: String?) -> Bool {
         guard let n = next, at > n.at, let t = n.title, at.timeIntervalSince(target?.at ?? .distantPast) > Self.ownLines,
@@ -155,7 +155,7 @@ final class FormatLog {
     /// The first seconds of a track (after a skip or a start the Music app sets up its own lossless queue then).
     static let ownLines: TimeInterval = 5
 
-    /// 0.4 licht: how the Music app went to this track, if its log said so in the last few seconds — true: it followed
+    /// 0.3.5: how the Music app went to this track, if its log said so in the last few seconds — true: it followed
     /// naturally; false: a jump. Nil: the log didn't say (the estimate of time left decides).
     func transition(to title: String) -> Bool? {
         // The item's title may be unknown (the Music app set up its items before Arco listened, 17:49:51): then the moment
@@ -165,7 +165,7 @@ final class FormatLog {
         return t.natural
     }
 
-    /// 0.4 licht: a track's length as the Music app loaded it.
+    /// 0.3.5: a track's length as the Music app loaded it.
     func length(of title: String) -> Int? {
         guard let item = titles.first(where: { $0.value == title })?.key else { return nil }
         return lengths[item]
@@ -199,7 +199,7 @@ final class FormatLog {
             if now < quietUntil { continue }
             entries.append(Entry(at: now, rate: rate, format: format))
             seenAny = true
-            // A line after the next track was named, of another rate than its last: that track's rate (0.4) — not in the
+            // A line after the next track was named, of another rate than its last: that track's rate (0.3.5) — not in the
             // first seconds after a change of track (17:47:17, Helsinki after a skip: its own lossless line came 3 s after
             // the next one was named).
             if var n = next, now > n.at, n.rate != rate, now.timeIntervalSince(target?.at ?? .distantPast) > Self.ownLines,
@@ -214,7 +214,7 @@ final class FormatLog {
         }
     }
 
-    /// The lines about the next track (0.4). True when the message was one of them.
+    /// The lines about the next track (0.3.5). True when the message was one of them.
     private func nextLine(_ m: String) -> Bool {
         func groups(_ pattern: String) -> [String]? {
             guard let re = try? NSRegularExpression(pattern: pattern),
