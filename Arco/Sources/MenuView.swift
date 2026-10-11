@@ -43,16 +43,18 @@ struct MenuView: View {
                 content
             }
             Divider()
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
+            // Two rows (11 Oct, René: "Show sample rate in… the sky?"): beside "Check for Updates…" — which only a release shows,
+            // with Sparkle on — the second checkbox was cut off. Now it has a row of its own.
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
                     LoginItemToggle()
-                    RateInMenuBarToggle()
+                    Spacer()
+                    if model.updater.available {
+                        Button("Check for Updates…") { model.updater.checkForUpdates() }
+                            .buttonStyle(.borderless)
+                    }
                 }
-                Spacer()
-                if model.updater.available {
-                    Button("Check for Updates…") { model.updater.checkForUpdates() }
-                        .buttonStyle(.borderless)
-                }
+                RateInMenuBarToggle()
             }
             HStack {
                 Button("Uninstall Arco…") { Uninstaller.run(bridge: bridge) }
