@@ -21,8 +21,11 @@ final class StreamServer: @unchecked Sendable {
     /// Starts listening; returns once the port is known (or nil after two seconds).
     func start() async -> UInt16? {
         if port != 0 { return port }
-        let fixed = NWEndpoint.Port(rawValue: Self.preferredPort).flatMap { try? NWListener(using: .tcp, on: $0) }
-        guard let l = fixed ?? (try? NWListener(using: .tcp, on: .any)) else { return nil }
+        // No Nagle (11 Oct 2026, 192 kHz): small sends waited for Roon's acknowledgement of the one before.
+        let params = NWParameters.tcp
+        if let tcp = params.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options { tcp.noDelay = true }
+        let fixed = NWEndpoint.Port(rawValue: Self.preferredPort).flatMap { try? NWListener(using: params, on: $0) }
+        guard let l = fixed ?? (try? NWListener(using: params, on: .any)) else { return nil }
         l.newConnectionHandler = { [weak self] connection in self?.accept(connection) }
         l.start(queue: .global(qos: .userInitiated))
         listener = l

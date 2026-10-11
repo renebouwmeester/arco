@@ -74,6 +74,9 @@ final class SliceStore: @unchecked Sendable {
         let connection: NWConnection
         var offset: Int
         var busy = false
+        /// When it last got a chunk, and whether a short wait for more is set (see pump).
+        var lastSend = Date.distantPast
+        var waiting = false
         init(connection: NWConnection, offset: Int) { self.connection = connection; self.offset = offset }
     }
 
@@ -506,7 +509,23 @@ final class SliceStore: @unchecked Sendable {
         let held = s.closed ? 0 : max(0, Int(Self.holdBackSeconds * s.rate) - released)
         let available = min(max(0, s.written - held), s.limit ?? Int.max) * Self.bytesPerFrame
         guard r.offset < available, let reader = s.reader else { return }
+        // Not a trickle (11 Oct 2026, 192 kHz: Roon fetched at 6.3 Mbit/s where 9.2 were needed — 0.69×, and it fell behind
+        // by that much): at the edge of an open run every capture of 512 frames (2.7 ms at 192 kHz) was a send of 3 KB of its
+        // own, and the next waited for it. Now less than 64 KB waits up to 30 ms for more — larger, fewer sends.
+        if !s.closed, available - r.offset < 65_536, Date().timeIntervalSince(r.lastSend) < 0.03 {
+            if !r.waiting {
+                r.waiting = true
+                DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.03) { [weak self, weak s] in
+                    guard let self, let s else { return }
+                    self.lock.lock(); defer { self.lock.unlock() }
+                    r.waiting = false
+                    self.pump(s, r)
+                }
+            }
+            return
+        }
         let count = min(262_144, available - r.offset)
+        r.lastSend = Date()
         try? reader.seek(toOffset: UInt64(r.offset))
         guard let data = try? reader.read(upToCount: count), !data.isEmpty else { return }
         r.busy = true
