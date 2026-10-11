@@ -470,7 +470,7 @@ final class Bridge: ObservableObject {
                 // start, and that was 6 s off (21:27:53, "The End"). Taking a natural transition for a skip would drop the
                 // run, and Roon would lose the end of the track; a skip in the last seconds is merely heard a little later.
                 let left = store.remainingInTrack ?? 0
-                // 0.4 licht: the Music app named this track as the next one — a natural change within fifteen seconds of
+                // 0.3.5: the Music app named this track as the next one — a natural change within fifteen seconds of
                 // the end too (the estimate of the first track of a session was 6 s off); further from it, it is still a
                 // skip (to the next track: Roon should follow at once, not after its lag).
                 let named = source === music ? formats.named(track.title) : nil
@@ -483,7 +483,7 @@ final class Bridge: ObservableObject {
                 }
                 let info = makeInfo(track)
                 // No length in Music's notification (a streamed track, 7 Oct 22:06: the Aria counted as one second, and
-                // the next "next" looked like a natural end): the length the Music app's log gave (0.4 licht), else ask
+                // the next "next" looked like a natural end): the length the Music app's log gave (0.3.5), else ask
                 // Music once more when it has loaded the track.
                 var track = track
                 if track.durationMs <= 0, let ms = formats.length(of: track.title) {
@@ -576,7 +576,7 @@ final class Bridge: ObservableObject {
             // First the Music app's own log (0.3.3); AppleScript once beside it, or on its own when the log has nothing.
             var read: (rate: Int, how: String)?
             let now = Int(AudioDevices.sampleRate(of: arco) ?? 0)
-            // 0.4 licht: named as the next track, its rate is the line after that (none: the same) — no window guessing.
+            // 0.3.5: named as the next track, its rate is the line after that (none: the same) — no window guessing.
             var fromLog: (rate: Int, how: String)?
             if kind == .natural, let n = self.formats.named(track.title) {
                 fromLog = n.rate.map { ($0, "the Music app's log, the line after it was named") } ?? (now, FormatLog.sameHow)
@@ -621,7 +621,7 @@ final class Bridge: ObservableObject {
         guard TrackClock.enabled, isOn, source === music, let change = lastChangeAt, at >= change,
               let track = music.track, let arco = arcoDevice,
               let c = correctable, c.trackID == track.id, at <= c.until else { return }
-        // 0.4 licht: a line after the next track was named is the next track's, loaded ahead — never a correction of this one.
+        // 0.3.5: a line after the next track was named is the next track's, loaded ahead — never a correction of this one.
         if formats.isNextTracks(at: at, playing: track.title) {
             Log.note("clock: \(track.title) — a line of \(rate) Hz, but it is the next track's (named before it): no correction")
             return
