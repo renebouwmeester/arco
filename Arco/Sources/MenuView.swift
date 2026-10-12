@@ -109,6 +109,10 @@ struct MenuView: View {
                             VolumeRow(zone: zone, model: model)
                                 .padding(.leading, 26).padding(.bottom, 4)
                         }
+                        if zone.id == model.selectedZoneID {
+                            RateRow(zone: zone, bridge: bridge)
+                                .padding(.leading, 26).padding(.bottom, 4)
+                        }
                     }
                 }
             }
@@ -132,11 +136,13 @@ extension MenuView {
         }
     }
 
-    /// " · 96 kHz", " · 44.1 kHz" — the rate Roon receives, changing with the track.
+    /// " · 96 kHz", " · 44.1 kHz" — the rate Roon receives, changing with the track; " · 96 kHz, fixed" on a zone with
+    /// a fixed rate (0.3.7).
     private var rateSuffix: String {
         guard let rate = bridge.rate, rate > 0 else { return "" }
         let khz = rate / 1000
-        return " · " + (khz.rounded() == khz ? String(format: "%.0f", khz) : String(format: "%.1f", khz)) + " kHz"
+        let fixed = bridge.zoneName.map(bridge.isFixed) == true
+        return " · " + (khz.rounded() == khz ? String(format: "%.0f", khz) : String(format: "%.1f", khz)) + " kHz" + (fixed ? ", fixed" : "")
     }
 
     private var isFailure: Bool { if case .failed = bridge.phase { return true }; return false }
@@ -195,6 +201,25 @@ private struct ZoneRow: View {
         case "loading": return "Loading…"
         default: return nil
         }
+    }
+}
+
+/// The rate for the chosen zone (0.3.7): follow each track (bit-perfect), or a fixed 96 kHz (no change of rate, ever).
+private struct RateRow: View {
+    let zone: RoonZone
+    @ObservedObject var bridge: Bridge
+
+    var body: some View {
+        Picker(selection: Binding(get: { bridge.isFixed(zone.name) }, set: { bridge.setFixed($0, for: zone.name) })) {
+            Text("Follow each track (bit-perfect)").tag(false)
+            Text("Fixed 96 kHz (no rate switches)").tag(true)
+        } label: {
+            Image(systemName: "waveform").foregroundStyle(.secondary).font(.caption)
+        }
+        .pickerStyle(.menu)
+        .controlSize(.small)
+        .font(.caption)
+        .fixedSize()
     }
 }
 

@@ -135,6 +135,37 @@ final class Bridge: ObservableObject {
     /// Spotify as a source: in the code, off unless asked for (René, 8 Oct: Arco is Apple Music in Roon; Spotify goes to
     /// Roon by way of a Spotify Connect endpoint). `defaults write nl.renebouwmeester.arco SpotifySource -bool true`.
     static var spotifyEnabled: Bool { UserDefaults.standard.bool(forKey: "SpotifySource") }
+    /// A fixed rate per zone (0.3.7, René: "an optional 96 cap that makes for a smoother, continuous stream, as with
+    /// Spotify"): the Arco device stays at 96 kHz for the Music app, so there's never a change of rate — no run frozen and
+    /// started again, no DAC locking on to a new rate, no seam in Roon. The price: the Music app resamples whatever isn't
+    /// 96 kHz. Off by default (bit-perfect, the device follows each track); remembered by zone name — Roon gives a zone a
+    /// new id when it's grouped.
+    static let fixedRate: Double = 96_000
+    private static let fixedKey = "FixedRateZones"
+    @Published private(set) var fixedZones = Set(UserDefaults.standard.stringArray(forKey: "FixedRateZones") ?? [])
+    func isFixed(_ zoneName: String) -> Bool { fixedZones.contains(zoneName) }
+    /// The zone Arco plays to now has the fixed rate, and the Music app is the source.
+    private var fixedNow: Bool { source === music && zoneName.map(isFixed) == true }
+    func setFixed(_ on: Bool, for zoneName: String) {
+        if on { fixedZones.insert(zoneName) } else { fixedZones.remove(zoneName) }
+        UserDefaults.standard.set(fixedZones.sorted(), forKey: Self.fixedKey)
+        Log.note("rate: \(zoneName) — \(on ? "fixed at 96 kHz" : "follows each track")")
+        guard isOn, zoneName == self.zoneName, source === music else { return }
+        if on { holdFixedRate(why: "chosen in the menu") }
+        else { Log.note("rate: the device follows the tracks again from the next one") }
+    }
+    /// The Arco device to 96 kHz now — the way of a change of clock (pause, set, play) when the Music app plays.
+    private func holdFixedRate(why: String) {
+        guard let arco = arcoDevice else { return }
+        let target = AudioDevices.bestRate(Self.fixedRate, of: arco)
+        guard AudioDevices.sampleRate(of: arco) != target else { return }
+        Log.note("rate: back to \(Int(target)) Hz, fixed (\(why))")
+        if let track = music.track, music.state == .playing {
+            Task { @MainActor [weak self] in await self?.setClock(Int(target), for: track, how: "fixed", fromStart: false) }
+        } else {
+            AudioDevices.setSampleRate(target, of: arco)
+        }
+    }
 
     // MARK: - On and off
 
@@ -192,7 +223,8 @@ final class Bridge: ObservableObject {
         AudioDevices.setDefaultOutput(arco)
         // The rate: Spotify plays 44.1; for the Music app it follows each track once the session runs (TrackClock).
         if let rate = source.preferredRate { AudioDevices.setSampleRate(rate, of: arco) }
-        Log.note("device: Arco at \(Int(AudioDevices.sampleRate(of: arco) ?? 0)) Hz; source \(source.name)")
+        else if fixedNow { AudioDevices.setSampleRate(AudioDevices.bestRate(Self.fixedRate, of: arco), of: arco) }
+        Log.note("device: Arco at \(Int(AudioDevices.sampleRate(of: arco) ?? 0)) Hz; source \(source.name)\(fixedNow ? " — fixed at 96 kHz for this zone" : "")")
         let s = SliceStore(directory: directory)
         s.onSliceStarted = { [weak self] slice in self?.sliceStarted(slice) }
         store = s
@@ -445,6 +477,11 @@ final class Bridge: ObservableObject {
         capture.rate = rate
         self.rate = rate
         rateChangedAt = Date()
+        // 0.3.7: the Music app sometimes sets the device to the track's rate itself (8 Oct, Traces of a Song) — on a zone
+        // with a fixed rate it goes back.
+        if fixedNow, isOn, let arco = arcoDevice, rate != AudioDevices.bestRate(Self.fixedRate, of: arco) {
+            holdFixedRate(why: "the device was changed")
+        }
     }
 
     // MARK: - The sources (Music, Spotify)
@@ -567,6 +604,7 @@ final class Bridge: ObservableObject {
     /// A new track of the Music app: its own rate, and the Arco device set to it.
     private func followClock(_ track: SourceTrack, kind: FormatLog.Change) {
         guard TrackClock.enabled, source === music, let arco = arcoDevice else { return }
+        if fixedNow { lastChangeAt = Date(); correctable = nil; return }   // 0.3.7: the zone's rate is fixed
         let change = Date(), previous = lastChangeAt
         lastChangeAt = change
         correctable = nil
@@ -618,7 +656,7 @@ final class Bridge: ObservableObject {
     /// A lossless line that came after the clock was chosen (0.3.4): the Music app started the track in AAC and set up the
     /// real format later. Up to 20 s after the change of track, set the clock after all, and remember the track's rate.
     private func lateLossless(at: Date, rate: Int) {
-        guard TrackClock.enabled, isOn, source === music, let change = lastChangeAt, at >= change,
+        guard TrackClock.enabled, !fixedNow, isOn, source === music, let change = lastChangeAt, at >= change,
               let track = music.track, let arco = arcoDevice,
               let c = correctable, c.trackID == track.id, at <= c.until else { return }
         // 0.3.5: a line after the next track was named is the next track's, loaded ahead — never a correction of this one.
@@ -705,6 +743,8 @@ final class Bridge: ObservableObject {
         if old.state == .playing { ownUntil = Date().addingTimeInterval(3); old.pause() }
         if let rate = s.preferredRate, let arco = arcoDevice, AudioDevices.sampleRate(of: arco) != rate {
             AudioDevices.setSampleRate(rate, of: arco)
+        } else if fixedNow, let arco = arcoDevice {
+            AudioDevices.setSampleRate(AudioDevices.bestRate(Self.fixedRate, of: arco), of: arco)
         }
         switch phase {
         case .waitingForMusic:
