@@ -79,6 +79,10 @@ struct UPnPRenderer: Identifiable, Equatable, Sendable {
             return String(s[r.upperBound..<e.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
         }
         guard let udn = tag("UDN", in: xml), let name = tag("friendlyName", in: xml) else { return nil }
+        // Not yet (René, 21 Oct 2026: "de exoten maar even wegfilteren"): Sonos (48 kHz at most, groups), HQPlayer (no
+        // SetNext — it wants the runs) and televisions. Measured first, then let in.
+        let maker = tag("manufacturer", in: xml) ?? ""
+        if ["Sonos", "Signalyst", "Samsung", "LG Electronics", "Sony"].contains(where: { maker.localizedCaseInsensitiveContains($0) }) { return nil }
         let base = tag("URLBase", in: xml).flatMap(URL.init(string:)) ?? location
         for block in xml.components(separatedBy: "<service>").dropFirst() {
             guard let type = tag("serviceType", in: block), type.contains(":service:AVTransport:"),
