@@ -476,6 +476,7 @@ final class Bridge: ObservableObject {
                 self.roonPositionMs = 0; self.roonTimeAt = Date()
                 self.marks.removeAll { $0.number < slice.number }
                 if self.phase == .starting { self.phase = .playing; self.startHeartbeat() }
+                else if self.phase == .paused, self.source.state == .playing { self.phase = .playing }   // a new slice plays: so do we
                 self.nextSent = slice.number      // a new transport URI clears the renderer's next: set it again
                 self.movedOn(to: slice.number)   // per track: and its next
             } else if self.phase == .starting {
@@ -550,6 +551,9 @@ final class Bridge: ObservableObject {
             break
         case .paused(let track):
             guard current(track) else { return }
+            // A UPnP renderer pauses on a slice a skip dropped (21 Oct 2026, 23:53:22, the WiiM after a skip to the Nocturnes):
+            // Arco's doing, not the listener's — and the menu said "Paused" while the new slice played.
+            if isUPnP, Int(track) != store?.status?.number { return }
             if !own { ownUntil = Date().addingTimeInterval(3); source.pause() }
             phase = .paused
         case .unpaused(let track):
