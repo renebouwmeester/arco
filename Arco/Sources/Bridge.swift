@@ -397,6 +397,7 @@ final class Bridge: ObservableObject {
                 self.roonPositionMs = 0; self.roonTimeAt = Date()
                 self.marks.removeAll { $0.number < slice.number }
                 if self.phase == .starting { self.phase = .playing; self.startHeartbeat() }
+                self.nextSent = slice.number      // a new transport URI clears the renderer's next: set it again
                 self.movedOn(to: slice.number)   // per track: and its next
             } else if self.phase == .starting {
                 self.fail("Roon: \(answer)")
@@ -480,7 +481,8 @@ final class Bridge: ObservableObject {
             // Roon stops a zone five seconds into a pause; a stop while playing is the user's.
             guard current(track) else { return }
             // Per track: the renderer reached the end of a slice nothing was set after — the next one at once, if there is one.
-            if store?.perTrack == true, let n = Int(track), let next = store?.slice(after: n), next.written > 0 {
+            // (A slice that follows another one is played by sliceStarted itself, when the renderer runs dry.)
+            if store?.perTrack == true, let n = Int(track), let next = store?.slice(after: n), next.written > 0, next.declared {
                 playNow(next, why: "the renderer stopped at the end of slice \(n)")
                 return
             }
@@ -962,7 +964,7 @@ final class Bridge: ObservableObject {
         Task { @MainActor in
             let answer = await s.play(track: String(slice.number), url: url, info: slice.info)
             guard self.session === s else { return }
-            if answer == "Playing" { self.roonSlice = slice.number; self.roonPositionMs = 0; self.roonTimeAt = Date(); self.movedOn(to: slice.number) }
+            if answer == "Playing" { self.roonSlice = slice.number; self.roonPositionMs = 0; self.roonTimeAt = Date(); self.nextSent = slice.number; self.movedOn(to: slice.number) }
             Log.note("play slice \(slice.number): the renderer answered \(answer)")
         }
     }
