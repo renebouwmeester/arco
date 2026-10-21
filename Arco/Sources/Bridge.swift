@@ -107,6 +107,7 @@ final class Bridge: ObservableObject {
         }
         formats.onLossless = { [weak self] at, rate in self?.lateLossless(at: at, rate: rate) }
         formats.onLabel = { [weak self] label in self?.labelArrived(label) }
+        formats.onNext = { [weak self] _ in self?.declareNext() }
         meter.rate = { [weak self] in self?.rate }
         // The Music app's volume, every fifteen seconds while Arco sends it (0.4.0).
         Task { @MainActor [weak self] in
@@ -256,6 +257,7 @@ final class Bridge: ObservableObject {
         else if fixedNow { AudioDevices.setSampleRate(AudioDevices.bestRate(Self.fixedRate, of: arco), of: arco) }
         Log.note("device: Arco at \(Int(AudioDevices.sampleRate(of: arco) ?? 0)) Hz; source \(source.name)\(fixedNow ? " — fixed at 96 kHz for this zone" : "")")
         let s = SliceStore(directory: directory)
+        s.perTrack = isUPnPTarget(target)   // a slice per track for a UPnP renderer (see Slices.swift)
         s.onSliceStarted = { [weak self] slice in self?.sliceStarted(slice) }
         store = s
         storeHolder.set(s)
@@ -283,6 +285,7 @@ final class Bridge: ObservableObject {
         pendingPause?.cancel(); pendingPause = nil
         roonPositionMs = 0
         roonSlice = 0
+        nextSent = 0
         marks = []
         session?.end()
         session = nil
@@ -394,6 +397,7 @@ final class Bridge: ObservableObject {
                 self.roonPositionMs = 0; self.roonTimeAt = Date()
                 self.marks.removeAll { $0.number < slice.number }
                 if self.phase == .starting { self.phase = .playing; self.startHeartbeat() }
+                self.movedOn(to: slice.number)   // per track: and its next
             } else if self.phase == .starting {
                 self.fail("Roon: \(answer)")
             }
@@ -424,6 +428,7 @@ final class Bridge: ObservableObject {
         defer { lastInfoHadCover = imageURL != nil }
         switch source.cover() {
         case .data(let data, let type)?:
+            defer { lastImageURL = imageURL }
             // Served by Arco, under an address unique per run: Roon caches images by URL ("c1" of a last run showed the
             // wrong cover).
             if let address {
@@ -448,7 +453,7 @@ final class Bridge: ObservableObject {
         switch event {
         case .playing(let track):
             guard let n = Int(track), n >= roonSlice else { return }
-            if n > roonSlice { roonSlice = n; roonPositionMs = 0; roonTimeAt = Date() }
+            if n > roonSlice { roonSlice = n; roonPositionMs = 0; roonTimeAt = Date(); movedOn(to: n) }
         case .time(let track, let ms):
             guard let n = Int(track), n >= roonSlice else { return }
             roonSlice = n
@@ -474,6 +479,11 @@ final class Bridge: ObservableObject {
         case .stopped(let track):
             // Roon stops a zone five seconds into a pause; a stop while playing is the user's.
             guard current(track) else { return }
+            // Per track: the renderer reached the end of a slice nothing was set after — the next one at once, if there is one.
+            if store?.perTrack == true, let n = Int(track), let next = store?.slice(after: n), next.written > 0 {
+                playNow(next, why: "the renderer stopped at the end of slice \(n)")
+                return
+            }
             // Only a stop of the run being written: a UPnP renderer stops when a skip drops the run it played (21 Oct
             // 2026, the Ellipse) — that is Arco's doing, and the Music app must play on.
             guard Int(track) == store?.status?.number else { return }
@@ -577,6 +587,7 @@ final class Bridge: ObservableObject {
                 }
                 if track.durationMs <= 0 { refreshLength(of: track.id) }
                 meter.begin(track.title, kind: natural ? .natural : .skip)
+                defer { declareNext() }   // per track: the next one, now that this one is known
                 if state == .playing { followClock(track, kind: natural ? .natural : .skip) }
                 let coverMissing = !lastInfoHadCover
                 if let mark = store.startTrack(.init(info: info, durationMs: track.durationMs), newRun: !natural) {
@@ -757,6 +768,10 @@ final class Bridge: ObservableObject {
     /// switched it to a better track of another rate — the clock, but only in the track's first seconds (from its start,
     /// before Roon plays it). Later it plays on resampled, and the rate is remembered.
     private func labelArrived(_ l: FormatLog.Label) {
+        // Per track: the declared next slice is this track — its rate from the label, as long as nobody fetched it.
+        if let q = store?.queuedSlice, Self.lines(q.info)?.title == l.title, store?.retag(q, rate: Double(l.rate)) == true {
+            Log.note("next: slice \(q.number) — \(l.title) now at \(l.rate) Hz (its label)")
+        }
         guard isOn, source === music, let track = music.track, l.title == track.title else { return }
         guard TrackClock.enabled, !fixedNow, let arco = arcoDevice,
               AudioDevices.bestRate(Double(l.rate), of: arco) != AudioDevices.sampleRate(of: arco) else { return }
@@ -886,6 +901,69 @@ final class Bridge: ObservableObject {
             let left = t.durationMs - Int(self.source.position() * 1000)
             self.store?.setRemaining(ms: left)
             Log.note("length: \(t.title) — \(t.durationMs / 1000) s, \(left / 1000) s left")
+        }
+    }
+
+    // MARK: - Per track (UPnP, see Slices.swift)
+
+    /// The image address of the last track information (per track: the declared next one borrows it until it plays).
+    private var lastImageURL: String?
+    /// The slice the renderer was last given as its next.
+    private var nextSent = 0
+
+    /// The next track the Music app named: its slice, declared ahead, cut at its length from the Music app's log — and the
+    /// drift of the current cut taken into it, so the cut after it falls on the track's boundary again (Basso's way).
+    private func declareNext() {
+        guard isUPnP, let store, store.perTrack, session != nil, source === music, let n = formats.next,
+              let title = n.title, let ms = n.lengthMs, ms > 0, let playing = music.track, title != playing.title,
+              store.writingTitle == playing.title else { return }
+        if let q = store.queuedSlice, Self.lines(q.info)?.title == title { sendNext(); return }
+        let rate = Double(formats.label(for: title)?.rate ?? n.rate ?? Int(capture.rate))
+        // The slice being written ends `drift` seconds before the Music app's track does: the next one takes that much more.
+        var drift = 0.0
+        if playing.durationMs > 0, let left = store.writingLeft {
+            drift = max(-2, min(2, (Double(playing.durationMs) / 1000 - music.position()) - left))
+        }
+        let frames = Int(max(1, Double(ms) / 1000 + drift) * rate)
+        let info = AudioInputSession.info(title: title, artist: playing.artist, album: playing.album, imageURL: lastImageURL)
+        guard let s = store.declare(.init(info: info, durationMs: ms), rate: rate, frames: frames) else { return }
+        Log.note(String(format: "next: slice %d declared — %@, %d Hz, %d s, cut %+.2f s", s.number, title, Int(rate), ms / 1000, drift))
+        sendNext()
+    }
+
+    /// The declared slice to the renderer as its next — once it plays the slice before it (an earlier SetNext would make it
+    /// skip the one in between).
+    private func sendNext() {
+        guard let store, let q = store.queuedSlice ?? store.slice(after: roonSlice), q.number > nextSent, q.declared,
+              store.slice(after: roonSlice)?.number == q.number, let s = session, let address else { return }
+        nextSent = q.number
+        let url = "http://\(address):\(server.port)\(q.path)"
+        Task { @MainActor in
+            let ok = await s.setNext(track: String(q.number), url: url, info: q.info)
+            Log.note("next: slice \(q.number) (\(Self.lines(q.info)?.title ?? "?")) set as the renderer's next\(ok ? "" : " — refused")")
+        }
+    }
+
+    /// The renderer moved on to slice `n` (per track): its title in the menu, older slices gone, the next one set.
+    private func movedOn(to n: Int) {
+        guard store?.perTrack == true else { return }
+        nowPlaying = store?.info(of: n).flatMap { Self.lines($0) }
+        store?.forget(before: n)
+        Log.note("renderer: slice \(n) — \(nowPlaying?.title ?? "?")")
+        declareNext()
+        sendNext()
+    }
+
+    /// A slice to the renderer at once (it stopped with nothing after it).
+    private func playNow(_ slice: SliceStore.Slice, why: String) {
+        guard let s = session, let address else { return }
+        let url = "http://\(address):\(server.port)\(slice.path)"
+        Log.note("play slice \(slice.number) at once — \(why)")
+        Task { @MainActor in
+            let answer = await s.play(track: String(slice.number), url: url, info: slice.info)
+            guard self.session === s else { return }
+            if answer == "Playing" { self.roonSlice = slice.number; self.roonPositionMs = 0; self.roonTimeAt = Date(); self.movedOn(to: slice.number) }
+            Log.note("play slice \(slice.number): the renderer answered \(answer)")
         }
     }
 

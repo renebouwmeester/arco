@@ -15,6 +15,8 @@ protocol Output: AnyObject {
     func begin(displayName: String, iconURL: String?) async -> Bool
     func play(track: String, url: String, info: JSON) async -> String
     func updateInfo(track: String, info: JSON) async
+    /// The next track, set ahead (UPnP's SetNextAVTransportURI): the output goes on in it by itself. False: can't.
+    func setNext(track: String, url: String, info: JSON) async -> Bool
     func control(_ control: String)
     func end()
 }
@@ -54,6 +56,7 @@ final class RoonOutput: Output {
     func begin(displayName: String, iconURL: String?) async -> Bool { await session.begin(displayName: displayName, iconURL: iconURL) }
     func play(track: String, url: String, info: JSON) async -> String { await session.play(track: track, url: url, info: info) }
     func updateInfo(track: String, info: JSON) async { await session.updateInfo(track: track, info: info) }
+    func setNext(track: String, url: String, info: JSON) async -> Bool { false }
     func control(_ control: String) {
         connection.request("\(transportService)/control", ["zone_or_output_id": session.zoneID, "control": control])
     }

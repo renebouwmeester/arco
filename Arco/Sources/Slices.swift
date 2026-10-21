@@ -20,6 +20,14 @@
 // Every request — the first, a second one, a Range request after a pause — gets exactly the bytes it asks for, as far
 // as they exist, and the rest as they arrive. A new request from the same address replaces the older readers of that
 // run (a reconnecting renderer must not pile them up), at most eight.
+//
+// Per track (21 Oct 2026, for UPnP renderers — René: "haal per track dan nu maar naar Arco"; the way of Basso's bridge per
+// track, its BrugTrackStroom, copied over and fitted to the runs): each track is a slice of its own with its exact length
+// in the WAV header (the KEF reads the duration there), so a renderer shows each title and a true progress bar. The
+// capture stays one stream, cut at the length the Music app gives: when a slice is full the writing goes on in the next
+// one, declared ahead (the bridge sets it as the renderer's next) — nothing lost, nothing twice, gapless at one rate. A
+// declared slice at another rate (the next track's label) takes nothing at the old rate: the clock changes first. No
+// next declared: the music waits in the overflow and becomes a slice when the Music app names the track.
 import Foundation
 import Network
 
@@ -38,6 +46,8 @@ final class SliceStore: @unchecked Sendable {
         var frames: Int
         /// Roon has the header (rate, length): from now on a change of rate means a new run.
         var headerSent = false
+        /// Per track: declared ahead as the next track (it waits for its own rate, see write).
+        var declared = false
         /// Where the current rate began (a frame of this run): the run goes to Roon once the rate has held a while.
         var rateSince = 0
         /// The track it begins with.
@@ -100,6 +110,12 @@ final class SliceStore: @unchecked Sendable {
     private var overflowRate: Double = 0
     private var gate: Gate = .waitForSound
     private var counter = 0
+    /// One slice per track, each with its exact length (UPnP renderers; see the top of this file).
+    var perTrack = false
+    /// Per track: the next track's slice, declared ahead — the writing goes on in it when the current one is full.
+    private var queued: (slice: Slice, track: Track)?
+    /// Per track: how much music at another rate than the empty declared slice was thrown away (the clock is changing).
+    private var discarded = 0
     /// Called (on the main queue) when a run begins: the bridge plays it in Roon — at once, or when Roon reaches the point
     /// where the run before it was frozen.
     var onSliceStarted: ((Slice) -> Void)?
@@ -128,6 +144,7 @@ final class SliceStore: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         track = t
         restartAtTrackStart = false   // a restart belongs to the track it was asked for
+        if perTrack { return startTrackPerTrack(t, newRun: newRun) }
         if !newRun, let c = current, !c.closed {
             // Room for this track in the run? If not (an hour at 192 kHz), the next run begins here, between two tracks —
             // the way a change of rate does — instead of in the middle of a track when the run is full.
@@ -149,6 +166,95 @@ final class SliceStore: @unchecked Sendable {
         if current == nil, !overflow.isEmpty { begin(rate: overflowRate) }
         return nil
     }
+
+    /// Under the lock: a new track, per track. The declared one (the music goes on in it by itself), or a skip.
+    private func startTrackPerTrack(_ t: Track, newRun: Bool) -> (number: Int, ms: Int)? {
+        let title = Self.title(t.info)
+        if !newRun {
+            // Declared, and the writing is in it already (or will be when the current one fills — less than 3 s left).
+            if let c = current, c.declared, Self.title(c.info) == title { return nil }
+            if let q = queued, Self.title(q.track.info) == title {
+                guard let c = current, !c.closed, Double(c.frames - c.written) / c.rate > 3 else { return nil }
+                Log.note("runs: \(title) began \(c.ms(c.frames - c.written)) ms before slice \(c.number) was full — a new slice")
+            }
+            if let c = current, !c.closed {
+                // The Music app went on before the slice was full (its length was off, or the track wasn't declared): the
+                // slice ends here — the renderer plays it to this point — and the new one follows it.
+                c.closed = true
+                current = nil
+                if let q = queued { remove(q.slice); queued = nil }
+                pendingRun = (t, (c.number, c.ms(c.written)))
+                if !overflow.isEmpty { begin(rate: overflowRate) }
+                return nil
+            }
+            if current == nil {
+                // Not declared (autoplay the Music app didn't name): what waits in the overflow begins its slice, after the last.
+                let last = slices.keys.max()
+                pendingRun = (t, last.flatMap { n in slices[n].map { (n, $0.ms($0.frames)) } })
+                if !overflow.isEmpty { begin(rate: overflowRate) }
+                return nil
+            }
+        }
+        // A skip (or a start, or a track that doesn't fit what was declared): everything goes, a new slice with the next sound.
+        if let c = current { drop(c); current = nil }
+        if let q = queued { remove(q.slice); queued = nil }
+        overflow = Data()
+        pendingRun = (t, nil)
+        return nil
+    }
+
+    /// Per track: the next track's slice, declared ahead (frames: its length at its rate). Replaces an earlier declared one
+    /// nobody fetched yet. Nil when there is nothing it could follow.
+    func declare(_ t: Track, rate: Double, frames: Int) -> Slice? {
+        lock.lock(); defer { lock.unlock() }
+        guard perTrack, current != nil || !overflow.isEmpty else { return nil }
+        if let q = queued {
+            guard !q.slice.headerSent, q.slice.written == 0, current !== q.slice else { return nil }
+            remove(q.slice); queued = nil
+        }
+        counter += 1
+        let s = Slice(number: counter, path: "/stream/\(session)-\(counter).wav", rate: rate, frames: frames,
+                      info: t.info, follows: nil, directory: directory)
+        s.declared = true
+        slices[s.number] = s
+        queued = (s, t)
+        // The writing is past the current slice already (it was full): it goes on here.
+        if current == nil { moveToQueued() }
+        return s
+    }
+
+    /// Per track: the declared slice gets another rate (the label came later), as long as nobody fetched it.
+    func retag(_ s: Slice, rate: Double) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !s.headerSent, s.written == 0, s.rate != rate else { return false }
+        s.frames = max(1, Int(Double(s.frames) / s.rate * rate)); s.rate = rate
+        return true
+    }
+
+    /// Per track: the title of the slice being written now.
+    var writingTitle: String? { lock.lock(); defer { lock.unlock() }; return current.map { Self.title($0.info) } }
+    /// Per track: seconds left in the slice being written.
+    var writingLeft: Double? { lock.lock(); defer { lock.unlock() }; return current.map { Double($0.frames - $0.written) / $0.rate } }
+    /// Per track: the first slice after `number` that is still there.
+    func slice(after number: Int) -> Slice? { lock.lock(); defer { lock.unlock() }; return slices.keys.filter { $0 > number }.min().flatMap { slices[$0] } }
+    /// Per track: the declared next slice, if any.
+    var queuedSlice: Slice? { lock.lock(); defer { lock.unlock() }; return queued?.slice }
+    /// A slice's track information (per track: what the renderer shows when it plays it).
+    func info(of number: Int) -> [String: Any]? { lock.lock(); defer { lock.unlock() }; return slices[number]?.info }
+
+    /// Under the lock: the writing goes on in the declared slice — with what waited in the overflow, at its rate.
+    private func moveToQueued() {
+        guard let q = queued else { return }
+        queued = nil
+        current = q.slice; track = q.track; trackStart = 0; discarded = 0
+        if overflowRate == q.slice.rate, !overflow.isEmpty {
+            let n = min(overflow.count / Self.bytesPerFrame, q.slice.frames)
+            append(overflow.prefix(n * Self.bytesPerFrame), frames: n, to: q.slice)
+        }
+        overflow = Data()
+    }
+
+    private static func title(_ info: [String: Any]) -> String { ((info["one_line"] as? [String: Any])?["line1"] as? String) ?? "" }
 
     /// The current track's real length came late (the Music app's notification of a streamed track can come without it):
     /// what is left of it, from the source's own duration and position.
@@ -297,7 +403,7 @@ final class SliceStore: @unchecked Sendable {
     func closeAll() {
         lock.lock(); defer { lock.unlock() }
         for s in slices.values { remove(s) }
-        current = nil; pendingRun = nil; track = nil; overflow = Data(); gate = .waitForSound
+        current = nil; pendingRun = nil; track = nil; overflow = Data(); gate = .waitForSound; queued = nil
     }
 
     // MARK: - From the capture queue
@@ -357,6 +463,26 @@ final class SliceStore: @unchecked Sendable {
         }
         while count > 0 {
             if let c = current, !c.closed {
+                // Per track: a declared slice waits for its own rate — what the Music app plays at the old one before the
+                // clock changes goes. Still nothing after 1.5 s: the rate stays after all (unfetched: the slice takes it).
+                if perTrack, c.declared, c.written == 0, c.rate != rate {
+                    discarded += count
+                    if Double(discarded) / rate < 1.5 { count = 0; continue }
+                    discarded = 0
+                    if !c.headerSent {
+                        c.frames = max(1, Int(Double(c.frames) / c.rate * rate)); c.rate = rate; c.rateSince = 0
+                        Log.note("runs: \(c.number) — the clock didn't change, the slice takes \(Int(rate)) Hz")
+                        continue
+                    }
+                }
+                if perTrack, c.isFull, c.rate == rate {
+                    // Full: on in the declared next slice, or the overflow until the next track is known.
+                    c.closed = true
+                    current = nil
+                    if queued != nil { moveToQueued(); Log.note("runs: \(c.number) full — on in \(current?.number ?? 0)") }
+                    else { Log.note("runs: \(c.number) full — nothing declared after it, the overflow") }
+                    continue
+                }
                 if c.rate != rate, !c.headerSent {
                     // The start of a track at the device's old rate: Roon hasn't seen this run's header, so what was
                     // written is converted to the new rate and the run goes on — the start of the track stays. When the
@@ -375,7 +501,7 @@ final class SliceStore: @unchecked Sendable {
                     c.rate = rate
                     c.written = converted.count / Self.bytesPerFrame
                     c.rateSince = c.written
-                    c.frames = Self.capacity(rate)
+                    c.frames = perTrack ? max(1, Int(Double(c.frames) / old * rate)) : Self.capacity(rate)
                     Log.note("runs: \(c.number) — rate \(Int(old)) → \(Int(rate)) before Roon had it: \(c.ms(c.written)) ms converted, it goes on")
                     continue
                 }
@@ -384,6 +510,7 @@ final class SliceStore: @unchecked Sendable {
                     // end — and go on in a new run at the new rate, with the track that plays now.
                     c.closed = true
                     current = nil
+                    if perTrack, let q = queued { remove(q.slice); queued = nil }
                     // Back to the start of the track (TrackClock): the next run takes over where the track began.
                     let fromStart = restartAtTrackStart && c.rate != rate
                     restartAtTrackStart = false
@@ -422,8 +549,9 @@ final class SliceStore: @unchecked Sendable {
         // As long as a WAV can be: its length is a 32-bit field. Three hours fit at 44.1 and 48 kHz; at 96 kHz they would
         // be 6.2 GB — the header overflowed and Arco crashed (21:32:25). So about two hours at 96, one at 192; a full run
         // simply goes on in the next one.
+        let frames = perTrack ? max(1, Int(Double(p.track.durationMs) / 1000 * rate)) : Self.capacity(rate)
         let s = Slice(number: counter, path: "/stream/\(session)-\(counter).wav", rate: rate,
-                      frames: Self.capacity(rate), info: p.track.info, follows: p.follows, directory: directory)
+                      frames: frames, info: p.track.info, follows: p.follows, directory: directory)
         slices[s.number] = s
         current = s
         track = p.track

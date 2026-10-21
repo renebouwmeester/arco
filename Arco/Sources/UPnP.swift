@@ -154,7 +154,10 @@ final class UPnPOutput: Output {
     private var track: String?
     private var poller: Task<Void, Never>?
     private var lastState = ""
-    var isStarved: Bool { lastState == "TRANSITIONING" }
+    /// Out of music: between two streams, or stopped at the end of a slice nothing followed (per track).
+    var isStarved: Bool { ["TRANSITIONING", "STOPPED", "NO_MEDIA_PRESENT"].contains(lastState) }
+    /// Which track each URL is (per track the renderer moves on to the next by itself; its TrackURI says where it is).
+    private var tracks: [String: String] = [:]
 
     init(renderer: UPnPRenderer) { self.renderer = renderer }
 
@@ -176,6 +179,7 @@ final class UPnPOutput: Output {
         }
         guard played else { return "MediaError" }
         self.track = track
+        tracks[url] = track
         lastState = ""
         // Playing once the renderer says so (it fetches and buffers first).
         for _ in 0..<40 {
@@ -189,6 +193,12 @@ final class UPnPOutput: Output {
 
     /// UPnP has no new track information for what plays: the renderer keeps showing the run's first track.
     func updateInfo(track: String, info: JSON) async {}
+
+    func setNext(track: String, url: String, info: JSON) async -> Bool {
+        tracks[url] = track
+        let meta = Self.didl(url: url, info: info)
+        return await renderer.avt("SetNextAVTransportURI", "<NextURI>\(UPnPRenderer.escape(url))</NextURI><NextURIMetaData>\(UPnPRenderer.escape(meta))</NextURIMetaData>") != nil
+    }
 
     func control(_ control: String) {
         Task { @MainActor in
@@ -210,10 +220,16 @@ final class UPnPOutput: Output {
         poller?.cancel()
         poller = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                guard let self, let track = self.track else { return }
+                guard let self, var track = self.track else { return }
                 let state = UPnPRenderer.value("CurrentTransportState", in: await self.renderer.avt("GetTransportInfo")) ?? ""
                 guard !Task.isCancelled, self.track == track else { return }
-                if state == "PLAYING", let rel = UPnPRenderer.value("RelTime", in: await self.renderer.avt("GetPositionInfo")) {
+                if state == "PLAYING", let position = await self.renderer.avt("GetPositionInfo"), let rel = UPnPRenderer.value("RelTime", in: position) {
+                    // Moved on to the next track by itself (SetNext, per track): from now on that one.
+                    if let uri = UPnPRenderer.value("TrackURI", in: position)?.replacingOccurrences(of: "&amp;", with: "&"),
+                       let t = self.tracks[uri], t != track {
+                        track = t; self.track = t
+                        self.onEvent?(.playing(track: t))
+                    }
                     self.onEvent?(.time(track: track, positionMs: Self.ms(rel)))
                 }
                 if state != self.lastState, !state.isEmpty {
