@@ -229,6 +229,17 @@ private struct RateRow: View {
         .controlSize(.small)
         .font(.caption)
         .fixedSize()
+        // 0.4.0: one stream for gapless, or one per track for a display that shows each song's length.
+        Picker(selection: Binding(get: { bridge.isPerTrack(zone.name) }, set: { bridge.setPerTrack($0, for: zone.name) })) {
+            Text("Gapless (one stream)").tag(false)
+            Text("One stream per track (short pause between tracks)").tag(true)
+        } label: {
+            Image(systemName: "rectangle.split.3x1").foregroundStyle(.secondary).font(.caption)
+        }
+        .pickerStyle(.menu)
+        .controlSize(.small)
+        .font(.caption)
+        .fixedSize()
     }
 }
 

@@ -138,9 +138,46 @@ final class FormatLog {
             try p.run()
             process = p
             Log.note("format log: following the Music app's audio formats")
+            readBackLabels()
         } catch {
             unavailable = true
             Log.note("format log: can't run the log command (\(error.localizedDescription)) — AppleScript only")
+        }
+    }
+
+    /// The labels of the last minutes, read back once at the start (0.4.0): the Music app gives a track its label when it
+    /// loads it, a minute or more ahead — after a start of Arco that label was gone, and the track had no bit depth (21 Oct
+    /// 2026, Goldberg Variations: 192 without the 24). Quietly: no lines per label, one line with the count.
+    private func readBackLabels() {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/log")
+        p.arguments = ["show", "--last", "5m", "--style", "ndjson", "--predicate",
+                       #"process == "Music" AND (eventMessage CONTAINS "Asset Log Mapping" OR eventMessage CONTAINS "fmtDescChangeNote" OR eventMessage CONTAINS "mediaFormatinfo")"#]
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = Pipe()
+        DispatchQueue.global(qos: .utility).async {
+            guard (try? p.run()) != nil else { return }
+            let data = out.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let iso = ISO8601DateFormatter(); iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                let before = self.labels.count
+                for line in data.split(separator: 0x0A) {
+                    guard let json = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+                          let message = json["eventMessage"] as? String else { continue }
+                    // "2026-10-21 16:57:03.316472+0200" → "2026-10-21T16:57:03.316+02:00" for the ISO 8601 parser.
+                    var at = Date()
+                    if let raw = json["timestamp"] as? String, raw.count >= 28 {
+                        let tz = String(raw.suffix(5)), base = String(raw.prefix(23)).replacingOccurrences(of: " ", with: "T")
+                        at = iso.date(from: base + String(tz.prefix(3)) + ":" + String(tz.suffix(2))) ?? at
+                    }
+                    _ = self.labelLine(message, at: at, quiet: true)
+                }
+                let found = self.labels.count - before
+                if found > 0 { Log.note("label: \(found) read back from the Music app's log of the last minutes") }
+            }
         }
     }
 
@@ -246,7 +283,7 @@ final class FormatLog {
     }
 
     /// The label lines (0.4.0, see Label). True when the message was one of them.
-    private func labelLine(_ m: String) -> Bool {
+    private func labelLine(_ m: String, at: Date = Date(), quiet: Bool = false) -> Bool {
         func groups(_ pattern: String) -> [String]? {
             guard let re = try? NSRegularExpression(pattern: pattern),
                   let x = re.firstMatch(in: m, range: NSRange(m.startIndex..., in: m)) else { return nil }
@@ -265,14 +302,15 @@ final class FormatLog {
             if priming != 0 {
                 if labels[title] == nil, aacSeen[g[0]] != track {
                     aacSeen[g[0]] = track
-                    Log.note("label: \(title) — track \(track) is AAC at \(rate) Hz (doesn't count)")
+                    if !quiet { Log.note("label: \(title) — track \(track) is AAC at \(rate) Hz (doesn't count)") }
                 }
                 return true
             }
             let old = labels[title]
             guard old?.rate != rate || old?.label != g[0] else { return true }
-            let l = Label(label: g[0], title: title, rate: rate, track: track, bits: nil, at: Date())
+            let l = Label(label: g[0], title: title, rate: rate, track: track, bits: nil, at: at)
             labels[title] = l
+            if quiet { return true }
             Log.note("label: \(title) — \(rate) Hz, lossless (\(g[0]), track \(track))\(old.map { ", was \($0.rate)" } ?? "")")
             onLabel?(l)
             return true
@@ -281,10 +319,11 @@ final class FormatLog {
             guard let b = groups(#"sdBitDepth = (\d+) bit"#)?.first.flatMap({ Int($0) }),
                   let khz = groups(#"asbdSampleRate = ([\d.]+) kHz"#)?.first.flatMap({ Double($0) }) else { return true }
             let rate = Int((khz * 1000).rounded())
-            guard var l = labels.values.filter({ $0.rate == rate && Date().timeIntervalSince($0.at) < 3 }).max(by: { $0.at < $1.at }),
+            guard var l = labels.values.filter({ $0.rate == rate && at.timeIntervalSince($0.at) >= 0 && at.timeIntervalSince($0.at) < 3 }).max(by: { $0.at < $1.at }),
                   l.bits != b else { return true }
             l.bits = b
             labels[l.title] = l
+            if quiet { return true }
             Log.note("label: \(l.title) — \(b)-bit")
             onLabel?(l)
             return true

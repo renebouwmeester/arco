@@ -42,7 +42,7 @@ final class TransitionMeter {
         close()
         open = Open(title: title, kind: kind, from: rate?(), at: Date())
         // The pause can be written just before the change (Sky Bass: 30 ms before "next track").
-        if let p = lastPause, Date().timeIntervalSince(p) < 1 { open?.signs.append(Self.pausedAtChange) }
+        if kind != .start, let p = lastPause, Date().timeIntervalSince(p) < 1 { open?.signs.append(Self.pausedAtChange) }
         closing?.cancel()
         closing = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(20))
@@ -55,19 +55,26 @@ final class TransitionMeter {
     func end() { close() }
 
     private var lastPause: Date?
+    /// Arco's own reasons to pause the Music app (a change of clock, switching on): such a pause isn't heard as one.
+    private var lastOwn: Date?
+    /// The zone has one stream per track: a new run at a natural change is chosen, not a fault.
+    var perTrack = false
 
     private func heard(_ line: String) {
-        if line.hasPrefix("music: paused") { lastPause = Date() }
+        if (line.hasPrefix("clock:") && line.contains(" → ")) || line.hasPrefix("session: began") || line.hasPrefix("rate: back to") { lastOwn = Date() }
+        if line.hasPrefix("music: paused"), lastOwn.map({ Date().timeIntervalSince($0) > 2.5 }) ?? true { lastPause = Date() }
         guard var o = open, !line.contains("transition:") else { return }
         // The Music app paused at the change itself (21 Oct 2026, Sky Bass: Apple's server answered 503, "Asset failed to
         // load", and the Music app paused "for an error") — Arco passes the pause on, but the change was not seamless.
-        if line.hasPrefix("music: paused"), Date().timeIntervalSince(o.at) < 3, !o.signs.contains(Self.pausedAtChange) {
+        if line.hasPrefix("music: paused"), o.kind != .start, lastPause.map({ Date().timeIntervalSince($0) < 0.5 }) == true,
+           Date().timeIntervalSince(o.at) < 3, !o.signs.contains(Self.pausedAtChange) {
             o.signs.append(Self.pausedAtChange)
         }
         for (sign, what) in Self.signs where line.contains(sign) {
             // A new run belongs to a start or a skip; at a natural change it is the silence of another rate (accepted, but
             // said). A correction at a skip or a start comes before Roon plays: not heard.
             if o.kind != .natural, sign == "begins the next run" || sign == "correcting, from the track's start" { continue }
+            if perTrack, sign == "begins the next run" { continue }
             if !o.signs.contains(what) { o.signs.append(what) }
         }
         open = o
