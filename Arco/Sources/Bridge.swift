@@ -352,8 +352,9 @@ final class Bridge: ObservableObject {
                 // Wait until Roon is a quarter of a second before the point of the change (at most the time it still has
                 // to play there, plus some slack).
                 let deadline = Date().addingTimeInterval(Double(max(0, follows.atMs - self.roonPositionNow())) / 1000 + 15)
+                // A UPnP renderer that ran dry at the frozen point (it knows its position only to the second): at once.
                 while Date() < deadline, self.session === s, self.roonSlice == follows.number,
-                      self.roonPositionNow() < follows.atMs - 250 {
+                      self.roonPositionNow() < follows.atMs - 250, !(self.session?.isStarved ?? false) {
                     try? await Task.sleep(for: .milliseconds(50))
                 }
                 Log.note("run \(slice.number): Roon at \(self.roonPositionNow()) ms of run \(follows.number) (frozen at \(follows.atMs))")

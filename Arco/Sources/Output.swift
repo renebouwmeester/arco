@@ -10,6 +10,8 @@ protocol Output: AnyObject {
     /// How many seconds of a run must be written before the output plays it (nil: the bridge's own rule).
     var lead: Double? { get }
     var name: String { get }
+    /// The output ran out of music (a UPnP renderer in TRANSITIONING): at a frozen run, the next one can go at once.
+    var isStarved: Bool { get }
     func begin(displayName: String, iconURL: String?) async -> Bool
     func play(track: String, url: String, info: JSON) async -> String
     func updateInfo(track: String, info: JSON) async
@@ -37,6 +39,7 @@ final class RoonOutput: Output {
     private let connection: RoonConnection
     let name: String
     let lead: Double? = nil
+    let isStarved = false
     var onEvent: ((AudioInputSession.Event) -> Void)? {
         get { session.onEvent }
         set { session.onEvent = newValue }

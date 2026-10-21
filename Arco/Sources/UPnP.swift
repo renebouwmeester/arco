@@ -154,6 +154,7 @@ final class UPnPOutput: Output {
     private var track: String?
     private var poller: Task<Void, Never>?
     private var lastState = ""
+    var isStarved: Bool { lastState == "TRANSITIONING" }
 
     init(renderer: UPnPRenderer) { self.renderer = renderer }
 
@@ -165,8 +166,15 @@ final class UPnPOutput: Output {
 
     func play(track: String, url: String, info: JSON) async -> String {
         let meta = Self.didl(url: url, info: info)
-        guard await renderer.avt("SetAVTransportURI", "<CurrentURI>\(UPnPRenderer.escape(url))</CurrentURI><CurrentURIMetaData>\(UPnPRenderer.escape(meta))</CurrentURIMetaData>") != nil,
-              await renderer.avt("Play", "<Speed>1</Speed>") != nil else { return "MediaError" }
+        guard await renderer.avt("SetAVTransportURI", "<CurrentURI>\(UPnPRenderer.escape(url))</CurrentURI><CurrentURIMetaData>\(UPnPRenderer.escape(meta))</CurrentURIMetaData>") != nil else { return "MediaError" }
+        // Play, again every quarter second for up to three: a renderer still between two streams refuses it at first
+        // (the Ellipse, 19:26:09: "Transition not available").
+        var played = false
+        for _ in 0..<12 {
+            if await renderer.avt("Play", "<Speed>1</Speed>") != nil { played = true; break }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        guard played else { return "MediaError" }
         self.track = track
         lastState = ""
         // Playing once the renderer says so (it fetches and buffers first).
