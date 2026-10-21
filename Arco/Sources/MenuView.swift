@@ -40,8 +40,9 @@ struct MenuView: View {
             } else if reconnecting {
                 Text(statusLine).font(.callout).foregroundStyle(.secondary)
             }
-            if isPaired {
-                if !setup.macReady { Divider() }
+            // The switch and the targets: with Roon connected — or without it, for This Mac and UPnP (experimental).
+            if isPaired || Bridge.localEnabled || UPnPFinder.enabled {
+                if !setup.macReady || !isPaired { Divider() }
                 content
             }
             Divider()
@@ -92,16 +93,13 @@ struct MenuView: View {
 
     /// The switch and the zones, once Roon is connected (before that the checklist says what is missing).
     @ViewBuilder private var content: some View {
-        switch model.connectionState {
-        case .searching, .connecting, .waitingForAuthorization:
-            EmptyView()
-        case .paired:
-            sending
-            Divider()
+        sending
+        Divider()
+        if isPaired {
             if model.zones.isEmpty {
                 Text("Roon has no zones right now").font(.callout).foregroundStyle(.secondary)
             } else {
-                Text("Play to").font(.caption).foregroundStyle(.secondary)
+                Text("Roon").font(.caption).foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(model.zones) { zone in
                         // Arco's zone shows what Arco sends (Roon's own line for an audio-input session lags behind).
@@ -118,7 +116,8 @@ struct MenuView: View {
                     }
                 }
             }
-            // This Mac's outputs (experimental, behind the switch — see Bridge.isLocal): the clock per track for a DAC.
+        }
+        // This Mac's outputs (experimental, behind the switch — see Bridge.isLocal): the clock per track for a DAC.
             if Bridge.localEnabled {
                 Text("This Mac (Experimental)").font(.caption).foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 2) {
@@ -148,7 +147,6 @@ struct MenuView: View {
                     }
                 }
             }
-        }
     }
 }
 
@@ -157,10 +155,11 @@ extension MenuView {
     @ViewBuilder var sending: some View {
         VStack(alignment: .leading, spacing: 4) {
             Toggle(isOn: Binding(get: { bridge.isOn }, set: { model.setSending($0) })) {
-                Text("Send to Roon").font(.body.weight(.medium))
+                Text("Enable").font(.body.weight(.medium))
             }
             .toggleStyle(.switch)
-            .disabled(!Bridge.driverInstalled || (model.selectedName == nil && !bridge.isOn))
+            // This Mac needs no Arco driver: the Music app plays to the DAC itself.
+            .disabled((!Bridge.driverInstalled && model.selectedLocal == nil) || (model.selectedName == nil && !bridge.isOn))
             Text(sendingLine)
                 .font(.caption)
                 .foregroundStyle(isFailure ? Color.red : .secondary)
@@ -189,10 +188,10 @@ extension MenuView {
     private var isFailure: Bool { if case .failed = bridge.phase { return true }; return false }
 
     private var sendingLine: String {
-        if !Bridge.driverInstalled { return "The Arco audio driver isn't installed yet" }
+        if !Bridge.driverInstalled, model.selectedLocal == nil { return "The Arco audio driver isn't installed yet" }
         let zone = bridge.zoneName ?? model.selectedName ?? "a zone"
         switch bridge.phase {
-        case .off: return model.selectedName == nil ? "Pick a zone below first" : "Switch on to play Apple Music in Roon on this Mac"
+        case .off: return model.selectedName.map { "Switch on to play Apple Music to \($0)" } ?? "Pick a zone below first"
         case .switchingOn: return "Switching to \(zone)…"
         case .waitingForMusic: return "Ready — press play in Music to start on \(zone)"
         case .starting: return "Starting on \(zone)…"

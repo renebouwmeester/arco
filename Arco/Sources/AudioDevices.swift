@@ -75,7 +75,10 @@ enum AudioDevices {
             var n = AudioObjectPropertyAddress(mSelector: kAudioObjectPropertyName,
                                                mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
             guard AudioObjectGetPropertyData(device, &n, 0, nil, &nsize, &name) == noErr, let name else { return nil }
-            return LocalOutput(id: uid, name: name.takeRetainedValue() as String)
+            let text = name.takeRetainedValue() as String
+            // Not Basso's own virtual device (René's Macs) — Arco's is out by its UID above.
+            guard !text.hasPrefix("Basso") else { return nil }
+            return LocalOutput(id: uid, name: text)
         }
     }
 
