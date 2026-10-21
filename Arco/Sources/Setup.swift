@@ -111,7 +111,7 @@ struct SetupList: View {
                      button: Self.title(app.access)) { setup.allowAutomation(app.bundleID, access: app.access) }
             }
             if roonOptional {
-                item(done: true, "Roon (Optional)", isPaired ? roonLine : "Only needed for Roon zones")
+                item(done: true, "Roon (optional)", isPaired ? roonLine : "Only needed for Roon zones")
             } else {
                 item(done: isPaired, "Enabled in Roon", roonLine)
             }
