@@ -920,6 +920,44 @@ final class Bridge: ObservableObject {
               let title = n.title, let ms = n.lengthMs, ms > 0, let playing = music.track, title != playing.title,
               store.writingTitle == playing.title else { return }
         if let q = store.queuedSlice, Self.lines(q.info)?.title == title { sendNext(); return }
+        // The next track's artist, album and cover (René, 20:22: "juiste titel, maar oude art, artiest, album"): the Music
+        // app's log names only its title and its album's id — Apple's public lookup gives the rest (at most 3 s, kept).
+        guard declaring != title else { return }
+        declaring = title
+        Task { @MainActor [weak self] in
+            let album = await Self.albumInfo(n.album)
+            guard let self else { return }
+            self.declaring = nil
+            self.declareNext(n, title: title, ms: ms, album: album)
+        }
+    }
+    private var declaring: String?
+    private static var albums: [String: (artist: String, album: String, cover: Data?)] = [:]
+
+    /// An album's artist, title and cover from Apple's public lookup (itunes.apple.com/lookup, no account).
+    private static func albumInfo(_ id: String) async -> (artist: String, album: String, cover: Data?)? {
+        if let known = albums[id] { return known }
+        let country = Locale.current.region?.identifier.lowercased() ?? "us"
+        guard !id.isEmpty, let url = URL(string: "https://itunes.apple.com/lookup?id=\(id)&country=\(country)") else { return nil }
+        var request = URLRequest(url: url); request.timeoutInterval = 3
+        guard let (data, _) = try? await URLSession.shared.data(for: request),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let r = (json["results"] as? [[String: Any]])?.first,
+              let artist = r["artistName"] as? String, let album = r["collectionName"] as? String else { return nil }
+        var cover: Data?
+        if let small = r["artworkUrl100"] as? String, let big = URL(string: small.replacingOccurrences(of: "100x100bb", with: "600x600bb")) {
+            var c = URLRequest(url: big); c.timeoutInterval = 3
+            cover = try? await URLSession.shared.data(for: c).0
+        }
+        let found = (artist, album, cover)
+        albums[id] = found
+        return found
+    }
+
+    private func declareNext(_ n: FormatLog.Next, title: String, ms: Int, album: (artist: String, album: String, cover: Data?)?) {
+        guard isUPnP, let store, store.perTrack, session != nil, let playing = music.track, title != playing.title,
+              store.writingTitle == playing.title else { return }
+        if let q = store.queuedSlice, Self.lines(q.info)?.title == title { sendNext(); return }
         let rate = Double(formats.label(for: title)?.rate ?? n.rate ?? Int(capture.rate))
         // The slice being written ends `drift` seconds before the Music app's track does: the next one takes that much more.
         var drift = 0.0
@@ -927,7 +965,14 @@ final class Bridge: ObservableObject {
             drift = max(-2, min(2, (Double(playing.durationMs) / 1000 - music.position()) - left))
         }
         let frames = Int(max(1, Double(ms) / 1000 + drift) * rate)
-        let info = AudioInputSession.info(title: title, artist: playing.artist, album: playing.album, imageURL: lastImageURL)
+        var image = lastImageURL
+        if let cover = album?.cover, let address {
+            coverNumber += 1
+            let key = "\(Self.coverRun)-\(coverNumber).jpg"
+            server.addCover(cover, type: "image/jpeg", key: key)
+            image = "http://\(address):\(server.port)/cover/\(key)"
+        }
+        let info = AudioInputSession.info(title: title, artist: album?.artist ?? playing.artist, album: album?.album ?? playing.album, imageURL: image)
         guard let s = store.declare(.init(info: info, durationMs: ms), rate: rate, frames: frames) else { return }
         Log.note(String(format: "next: slice %d declared — %@, %d Hz, %d s, cut %+.2f s", s.number, title, Int(rate), ms / 1000, drift))
         sendNext()
