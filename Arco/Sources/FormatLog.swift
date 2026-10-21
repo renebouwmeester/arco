@@ -154,7 +154,7 @@ final class FormatLog {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/log")
         p.arguments = ["show", "--last", "30m", "--style", "ndjson", "--predicate",
-                       #"process == "Music" AND (eventMessage CONTAINS "Asset Log Mapping" OR eventMessage CONTAINS "fmtDescChangeNote" OR eventMessage CONTAINS "mediaFormatinfo" OR eventMessage CONTAINS "-bit source")"#]
+                       #"process == "Music" AND (eventMessage CONTAINS "Asset Log Mapping" OR eventMessage CONTAINS "fmtDescChangeNote" OR eventMessage CONTAINS "mediaFormatinfo" OR eventMessage CONTAINS "-bit source" OR eventMessage CONTAINS "ITMPAVItemCount INIT" OR eventMessage CONTAINS "isInContiguousAlbum" OR eventMessage CONTAINS "loadedTimeRanges")"#]
         let out = Pipe()
         p.standardOutput = out
         p.standardError = Pipe()
@@ -175,7 +175,13 @@ final class FormatLog {
                         let tz = String(raw.suffix(5)), base = String(raw.prefix(23)).replacingOccurrences(of: " ", with: "T")
                         at = iso.date(from: base + String(tz.prefix(3)) + ":" + String(tz.suffix(2))) ?? at
                     }
-                    _ = self.labelLine(message, at: at, quiet: true)
+                    if !self.labelLine(message, at: at, quiet: true) { _ = self.nextLine(message, quiet: true) }
+                }
+                // The next track too (21 Oct 2026, per track for UPnP): named when the current one began — after a start of
+                // Arco that line was gone, and the first change of track went by the overflow (a gap of 5 s on the KEF).
+                if let n = self.next {
+                    Log.note("next: read back — the Music app names \(n.title ?? n.item)\(n.lengthMs.map { ", \($0 / 1000) s" } ?? "")")
+                    self.onNext?(n)
                 }
                 let found = self.labels.count - before
                 if found > 0 { Log.note("label: \(found) read back from the Music app's log of the last half hour") }
@@ -348,7 +354,7 @@ final class FormatLog {
     }
 
     /// The lines about the next track (0.3.5). True when the message was one of them.
-    private func nextLine(_ m: String) -> Bool {
+    private func nextLine(_ m: String, quiet: Bool = false) -> Bool {
         func groups(_ pattern: String) -> [String]? {
             guard let re = try? NSRegularExpression(pattern: pattern),
                   let x = re.firstMatch(in: m, range: NSRange(m.startIndex..., in: m)) else { return nil }
@@ -370,8 +376,7 @@ final class FormatLog {
                     lengths[g[0]] = ms
                     if var n = next, n.item == g[0], n.lengthMs == nil {
                         n.lengthMs = ms; next = n
-                        Log.note("next: \(n.title ?? n.item) — \(ms / 1000) s long")
-                        onNext?(n)
+                        if !quiet { Log.note("next: \(n.title ?? n.item) — \(ms / 1000) s long"); onNext?(n) }
                     }
                 }
             }
@@ -388,8 +393,10 @@ final class FormatLog {
             if next?.item == g[0] { return true }
             let n = Next(item: g[0], title: titles[g[0]], album: g[1], lengthMs: lengths[g[0]], rate: nil, at: Date())
             next = n
-            Log.note("next: the Music app names \(n.title ?? n.item) (album \(n.album))\(n.lengthMs.map { ", \($0 / 1000) s" } ?? "")")
-            onNext?(n)
+            if !quiet {
+                Log.note("next: the Music app names \(n.title ?? n.item) (album \(n.album))\(n.lengthMs.map { ", \($0 / 1000) s" } ?? "")")
+                onNext?(n)
+            }
             return true
         }
         return false

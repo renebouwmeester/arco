@@ -241,6 +241,8 @@ final class SliceStore: @unchecked Sendable {
 
     /// Per track: the title of the slice being written now.
     var writingTitle: String? { lock.lock(); defer { lock.unlock() }; return current.map { Self.title($0.info) } }
+    /// Per track: the slice being written was declared ahead (the renderer has it as its next).
+    var writingDeclared: Bool { lock.lock(); defer { lock.unlock() }; return current?.declared ?? false }
     /// Per track: seconds left in the slice being written.
     var writingLeft: Double? { lock.lock(); defer { lock.unlock() }; return current.map { Double($0.frames - $0.written) / $0.rate } }
     /// Per track: the first slice after `number` that is still there.

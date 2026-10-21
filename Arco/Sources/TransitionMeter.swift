@@ -27,6 +27,8 @@ final class TransitionMeter {
         ("the end of the run not found again", "a resume didn't splice"),
         ("resume: Roon is", "Roon far behind on resuming"),
         ("begins the next run", "a new run at the change (another rate)"),
+        // Per track (UPnP): a natural change the renderer didn't have as its next — it stops in between.
+        ("not declared ahead", "the next track wasn't declared ahead — the renderer stopped in between"),
     ]
 
     static let pausedAtChange = "the Music app paused at the change (often a track that failed to load)"

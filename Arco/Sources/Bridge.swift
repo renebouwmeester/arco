@@ -597,7 +597,15 @@ final class Bridge: ObservableObject {
                     if coverMissing { lateCover(track) }
                     Log.note("next track: \(track.title) — goes on in run \(mark.number) at \(mark.ms) ms (\(String(format: "%.1f", left)) s were left)")
                 } else {
-                    Log.note("next track: \(track.title) — \(natural ? "begins the next run" : "a skip, a new run at once") (\(String(format: "%.1f", left)) s were left)")
+                    if store.perTrack {
+                        // Per track every track is a slice of its own: what matters is whether it was declared ahead (the
+                        // renderer goes on by itself) or not (the renderer stops in between).
+                        let how = !natural ? "a skip, a new slice at once"
+                            : store.writingTitle == track.title && store.writingDeclared ? "its declared slice" : "not declared ahead, a slice after the last"
+                        Log.note("next track: \(track.title) — \(how) (\(String(format: "%.1f", left)) s were left)")
+                    } else {
+                        Log.note("next track: \(track.title) — \(natural ? "begins the next run" : "a skip, a new run at once") (\(String(format: "%.1f", left)) s were left)")
+                    }
                     if coverMissing { lateCover(track) }
                 }
             }
