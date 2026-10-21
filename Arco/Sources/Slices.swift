@@ -316,6 +316,20 @@ final class SliceStore: @unchecked Sendable {
     private var restartAtTrackStart = false
     func restartTrackAtNewRate() {
         lock.lock(); defer { lock.unlock() }
+        // Per track: the change of clock is for the declared next track, while the writing is still in the last seconds of
+        // the slice before it (21 Oct 2026, 20:59, Cinque lunghissimi minuti → Glimmer Of Hope: "back to the track's start"
+        // took the start of Cinque's slice, cut it at 0 ms, and the KEF lost its end). Basso's way: the rest of that slice
+        // becomes silence, it closes, and the track begins in its own slice at its own rate.
+        if perTrack, let q = queued, let c = current, c !== q.slice, let t = track, Self.title(t.info) == Self.title(q.track.info) {
+            let rest = max(0, c.frames - c.written)
+            if rest > 0 { append(Data(count: rest * Self.bytesPerFrame), frames: rest, to: c) }
+            c.closed = true
+            current = nil
+            moveToQueued()
+            Log.note("runs: \(c.number) — \(c.ms(rest)) ms of silence to its end (the clock changes for \(Self.title(t.info))), on in \(current?.number ?? 0)")
+            restartAtTrackStart = true
+            return
+        }
         restartAtTrackStart = true
         // From now on nothing past the track's start goes to Roon (see Slice.limit).
         if let c = current, !c.closed { c.limit = trackStart }
