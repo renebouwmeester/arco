@@ -106,6 +106,10 @@ final class Bridge: ObservableObject {
         }
         formats.onLossless = { [weak self] at, rate in self?.lateLossless(at: at, rate: rate) }
         formats.onLabel = { [weak self] label in self?.labelArrived(label) }
+        formats.onDecoderBits = { [weak self] bits, rate in
+            guard let self, self.isOn, self.source === self.music, Int(self.capture.rate) == rate, self.bits != bits else { return }
+            self.bits = bits
+        }
         meter.rate = { [weak self] in self?.rate }
         // The Music app's volume, every fifteen seconds while Arco sends it (0.4.0).
         Task { @MainActor [weak self] in
@@ -163,18 +167,6 @@ final class Bridge: ObservableObject {
     /// new id when it's grouped.
     static let fixedRate: Double = 96_000
     private static let fixedKey = "FixedRateZones"
-    /// Zones with one stream per track (0.4.0, René: "users with a streamer with a display see one ever-changing, very long
-    /// track"): Roon shows each song's own length and counter — with a short pause between songs, also at the same rate
-    /// (Roon's queue wants the next track buffered ahead, which a live source can't give; see docs/QUEUE.md). A trial with
-    /// `length` in the track information didn't help: Roon shows the length of the stream (21 Oct 2026). Remembered by name.
-    @Published private(set) var perTrackZones = Set(UserDefaults.standard.stringArray(forKey: "PerTrackZones") ?? [])
-    func isPerTrack(_ zoneName: String) -> Bool { perTrackZones.contains(zoneName) }
-    private var perTrackNow: Bool { source === music && zoneName.map(isPerTrack) == true }
-    func setPerTrack(_ on: Bool, for zoneName: String) {
-        if on { perTrackZones.insert(zoneName) } else { perTrackZones.remove(zoneName) }
-        UserDefaults.standard.set(perTrackZones.sorted(), forKey: "PerTrackZones")
-        Log.note("runs: \(zoneName) — \(on ? "one stream per track" : "gapless, one stream")")
-    }
     @Published private(set) var fixedZones = Set(UserDefaults.standard.stringArray(forKey: "FixedRateZones") ?? [])
     func isFixed(_ zoneName: String) -> Bool { fixedZones.contains(zoneName) }
     /// The zone Arco plays to now has the fixed rate, and the Music app is the source.
@@ -569,11 +561,10 @@ final class Bridge: ObservableObject {
                     Log.note("length: \(track.title) — \(ms / 1000) s, from the Music app's log")
                 }
                 if track.durationMs <= 0 { refreshLength(of: track.id) }
-                meter.perTrack = perTrackNow
                 meter.begin(track.title, kind: natural ? .natural : .skip)
                 if state == .playing { followClock(track, kind: natural ? .natural : .skip) }
                 let coverMissing = !lastInfoHadCover
-                if let mark = store.startTrack(.init(info: info, durationMs: track.durationMs), newRun: !natural || perTrackNow) {
+                if let mark = store.startTrack(.init(info: info, durationMs: track.durationMs), newRun: !natural) {
                     marks.append((mark.number, mark.ms, info))
                     if coverMissing { lateCover(track) }
                     Log.note("next track: \(track.title) — goes on in run \(mark.number) at \(mark.ms) ms (\(String(format: "%.1f", left)) s were left)")

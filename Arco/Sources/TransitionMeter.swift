@@ -57,8 +57,6 @@ final class TransitionMeter {
     private var lastPause: Date?
     /// Arco's own reasons to pause the Music app (a change of clock, switching on): such a pause isn't heard as one.
     private var lastOwn: Date?
-    /// The zone has one stream per track: a new run at a natural change is chosen, not a fault.
-    var perTrack = false
 
     private func heard(_ line: String) {
         if (line.hasPrefix("clock:") && line.contains(" → ")) || line.hasPrefix("session: began") || line.hasPrefix("rate: back to") { lastOwn = Date() }
@@ -74,7 +72,6 @@ final class TransitionMeter {
             // A new run belongs to a start or a skip; at a natural change it is the silence of another rate (accepted, but
             // said). A correction at a skip or a start comes before Roon plays: not heard.
             if o.kind != .natural, sign == "begins the next run" || sign == "correcting, from the track's start" { continue }
-            if perTrack, sign == "begins the next run" { continue }
             if !o.signs.contains(what) { o.signs.append(what) }
         }
         open = o

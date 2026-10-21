@@ -93,6 +93,9 @@ final class FormatLog {
     private var aacSeen: [String: Int] = [:]
     /// A lossless label arrived or changed (a track loaded ahead, or the one that plays switching to a better track).
     var onLabel: ((Label) -> Void)?
+    /// The decoder set up a new audio queue (a skip, a start, a change of clock): its bit depth and rate — the track that
+    /// plays now, also when its label (given a minute ahead) is out of reach.
+    var onDecoderBits: ((Int, Int) -> Void)?
 
     /// The lossless label of the track with this title, if the Music app gave one.
     func label(for title: String) -> Label? { labels[title] }
@@ -116,7 +119,7 @@ final class FormatLog {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/log")
         p.arguments = ["stream", "--style", "ndjson", "--predicate",
-                       #"process == "Music" AND (eventMessage CONTAINS "Creating AudioQueue with format" OR eventMessage CONTAINS "ITMPAVItemCount INIT" OR eventMessage CONTAINS "isInContiguousAlbum" OR eventMessage CONTAINS "loadedTimeRanges" OR eventMessage CONTAINS "setTargetContentItemID" OR eventMessage CONTAINS "Asset Log Mapping" OR eventMessage CONTAINS "fmtDescChangeNote" OR eventMessage CONTAINS "mediaFormatinfo")"#]
+                       #"process == "Music" AND (eventMessage CONTAINS "Creating AudioQueue with format" OR eventMessage CONTAINS "ITMPAVItemCount INIT" OR eventMessage CONTAINS "isInContiguousAlbum" OR eventMessage CONTAINS "loadedTimeRanges" OR eventMessage CONTAINS "setTargetContentItemID" OR eventMessage CONTAINS "Asset Log Mapping" OR eventMessage CONTAINS "fmtDescChangeNote" OR eventMessage CONTAINS "mediaFormatinfo" OR eventMessage CONTAINS "-bit source")"#]
         let out = Pipe(), err = Pipe()
         p.standardOutput = out
         p.standardError = err
@@ -154,7 +157,7 @@ final class FormatLog {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/log")
         p.arguments = ["show", "--last", "30m", "--style", "ndjson", "--predicate",
-                       #"process == "Music" AND (eventMessage CONTAINS "Asset Log Mapping" OR eventMessage CONTAINS "fmtDescChangeNote" OR eventMessage CONTAINS "mediaFormatinfo")"#]
+                       #"process == "Music" AND (eventMessage CONTAINS "Asset Log Mapping" OR eventMessage CONTAINS "fmtDescChangeNote" OR eventMessage CONTAINS "mediaFormatinfo" OR eventMessage CONTAINS "-bit source")"#]
         let out = Pipe()
         p.standardOutput = out
         p.standardError = Pipe()
@@ -318,20 +321,34 @@ final class FormatLog {
             onLabel?(l)
             return true
         }
+        // The bit depth: "sdBitDepth = 24 bit" — not always there (21 Oct 2026, 3.2 Allemande: "high res lossless", 96.0 kHz,
+        // no depth); hi-res is 24-bit at Apple, so that says it too. And the decoder's own line, with every new audio queue
+        // (a skip, a change of clock): "… 44100 Hz, alac … from 16-bit source" (Mandal had no mediaFormatinfo at all).
+        if m.contains("-bit source") {
+            guard let g = groups(#"(\d+) Hz, alac.*?from (\d+)-bit source"#), g.count == 2, let rate = Int(g[0]), let b = Int(g[1]) else { return true }
+            giveBits(b, rate: rate, at: at, window: 10, quiet: quiet)
+            if !quiet { onDecoderBits?(b, rate) }
+            return true
+        }
         if m.contains("mediaFormatinfo") {
-            guard let b = groups(#"sdBitDepth = (\d+) bit"#)?.first.flatMap({ Int($0) }),
-                  let khz = groups(#"asbdSampleRate = ([\d.]+) kHz"#)?.first.flatMap({ Double($0) }) else { return true }
+            guard let khz = groups(#"asbdSampleRate = ([\d.]+) kHz"#)?.first.flatMap({ Double($0) }) else { return true }
             let rate = Int((khz * 1000).rounded())
-            guard var l = labels.values.filter({ $0.rate == rate && at.timeIntervalSince($0.at) >= 0 && at.timeIntervalSince($0.at) < 3 }).max(by: { $0.at < $1.at }),
-                  l.bits != b else { return true }
-            l.bits = b
-            labels[l.title] = l
-            if quiet { return true }
-            Log.note("label: \(l.title) — \(b)-bit")
-            onLabel?(l)
+            guard let b = groups(#"sdBitDepth = (\d+) bit"#)?.first.flatMap({ Int($0) }) ?? (m.contains("high res lossless") ? 24 : nil) else { return true }
+            giveBits(b, rate: rate, at: at, window: 3, quiet: quiet)
             return true
         }
         return false
+    }
+
+    /// The bit depth to the newest lossless label at that rate, written at most `window` seconds before.
+    private func giveBits(_ b: Int, rate: Int, at: Date, window: TimeInterval, quiet: Bool) {
+        guard var l = labels.values.filter({ $0.rate == rate && at.timeIntervalSince($0.at) >= 0 && at.timeIntervalSince($0.at) < window }).max(by: { $0.at < $1.at }),
+              l.bits != b else { return }
+        l.bits = b
+        labels[l.title] = l
+        if quiet { return }
+        Log.note("label: \(l.title) — \(b)-bit")
+        onLabel?(l)
     }
 
     /// The lines about the next track (0.3.5). True when the message was one of them.
