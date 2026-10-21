@@ -29,6 +29,8 @@ final class TransitionMeter {
         ("begins the next run", "a new run at the change (another rate)"),
     ]
 
+    static let pausedAtChange = "the Music app paused at the change (often a track that failed to load)"
+
     init() {
         Log.observer = { [weak self] line in
             Task { @MainActor in self?.heard(line) }
@@ -52,6 +54,11 @@ final class TransitionMeter {
 
     private func heard(_ line: String) {
         guard var o = open, !line.contains("transition:") else { return }
+        // The Music app paused at the change itself (21 Oct 2026, Sky Bass: Apple's server answered 503, "Asset failed to
+        // load", and the Music app paused "for an error") — Arco passes the pause on, but the change was not seamless.
+        if line.hasPrefix("music: paused"), Date().timeIntervalSince(o.at) < 3, !o.signs.contains(Self.pausedAtChange) {
+            o.signs.append(Self.pausedAtChange)
+        }
         for (sign, what) in Self.signs where line.contains(sign) {
             // A new run belongs to a start or a skip; at a natural change it is the silence of another rate (accepted, but
             // said). A correction at a skip or a start comes before Roon plays: not heard.
