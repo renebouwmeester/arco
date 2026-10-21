@@ -7,7 +7,7 @@ struct LoginItemToggle: View {
     @State private var on = SMAppService.mainApp.status == .enabled
 
     var body: some View {
-        Toggle("Open at login", isOn: Binding(get: { on }, set: { set($0) }))
+        Toggle("Open at Login", isOn: Binding(get: { on }, set: { set($0) }))
             .toggleStyle(.checkbox)
             .onAppear { on = SMAppService.mainApp.status == .enabled }
     }

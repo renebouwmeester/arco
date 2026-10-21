@@ -93,9 +93,6 @@ final class FormatLog {
     private var aacSeen: [String: Int] = [:]
     /// A lossless label arrived or changed (a track loaded ahead, or the one that plays switching to a better track).
     var onLabel: ((Label) -> Void)?
-    /// The decoder set up a new audio queue (a skip, a start, a change of clock): its bit depth and rate — the track that
-    /// plays now, also when its label (given a minute ahead) is out of reach.
-    var onDecoderBits: ((Int, Int) -> Void)?
 
     /// The lossless label of the track with this title, if the Music app gave one.
     func label(for title: String) -> Label? { labels[title] }
@@ -327,7 +324,6 @@ final class FormatLog {
         if m.contains("-bit source") {
             guard let g = groups(#"(\d+) Hz, alac.*?from (\d+)-bit source"#), g.count == 2, let rate = Int(g[0]), let b = Int(g[1]) else { return true }
             giveBits(b, rate: rate, at: at, window: 10, quiet: quiet)
-            if !quiet { onDecoderBits?(b, rate) }
             return true
         }
         if m.contains("mediaFormatinfo") {
