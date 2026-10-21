@@ -399,8 +399,12 @@ final class Bridge: ObservableObject {
         }
     }
 
+    /// Whether the last makeInfo found a cover (0.4.0, see lateCover).
+    private var lastInfoHadCover = false
+
     private func makeInfo(_ track: SourceTrack) -> JSON {
         var imageURL: String?
+        defer { lastInfoHadCover = imageURL != nil }
         switch source.cover() {
         case .data(let data, let type)?:
             // Served by Arco, under an address unique per run: Roon caches images by URL ("c1" of a last run showed the
@@ -554,11 +558,14 @@ final class Bridge: ObservableObject {
                 if track.durationMs <= 0 { refreshLength(of: track.id) }
                 meter.begin(track.title, kind: natural ? .natural : .skip)
                 if state == .playing { followClock(track, kind: natural ? .natural : .skip) }
+                let coverMissing = !lastInfoHadCover
                 if let mark = store.startTrack(.init(info: info, durationMs: track.durationMs), newRun: !natural) {
                     marks.append((mark.number, mark.ms, info))
+                    if coverMissing { lateCover(track) }
                     Log.note("next track: \(track.title) — goes on in run \(mark.number) at \(mark.ms) ms (\(String(format: "%.1f", left)) s were left)")
                 } else {
                     Log.note("next track: \(track.title) — \(natural ? "begins the next run" : "a skip, a new run at once") (\(String(format: "%.1f", left)) s were left)")
+                    if coverMissing { lateCover(track) }
                 }
             }
             if state != .playing, phase == .playing {
@@ -814,6 +821,31 @@ final class Bridge: ObservableObject {
             if phase == .paused { roonControl("play"); phase = .playing }
         default:
             break
+        }
+    }
+
+    /// The cover a moment later (0.4.0, René: "Roon krijgt nu artwork niet mee?"): at the change of track the Music app
+    /// often hasn't loaded the new track's artwork yet ("Can't get raw data of artwork 1 of current track" — streamed and
+    /// autoplay tracks above all), and Roon got the title without a cover. Asked again after 1.5 s and 4 s; found, it goes
+    /// into the track's mark (Roon hasn't reached it yet) or to Roon at once (Roon shows the track already).
+    private func lateCover(_ track: SourceTrack) {
+        Task { @MainActor [weak self] in
+            for wait in [1.5, 2.5] {
+                try? await Task.sleep(for: .seconds(wait))
+                guard let self, self.isOn, self.source.track?.id == track.id else { return }
+                let info = self.makeInfo(track)
+                guard self.lastInfoHadCover else { continue }
+                if let i = self.marks.firstIndex(where: { Self.lines($0.info)?.title == track.title }) {
+                    self.marks[i].info = info
+                    Log.note("cover: \(track.title) — found a moment later, in the track's mark")
+                } else if let run = self.store?.status?.number {
+                    // The run this track is written in (a skip began a new one; Roon may still be in the previous).
+                    Task { await self.session?.updateInfo(track: String(run), info: info) }
+                    Log.note("cover: \(track.title) — found a moment later, sent to Roon")
+                }
+                return
+            }
+            if let self, self.source.track?.id == track.id { Log.note("cover: \(track.title) — the Music app has none") }
         }
     }
 
