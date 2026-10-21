@@ -145,13 +145,15 @@ final class FormatLog {
         }
     }
 
-    /// The labels of the last minutes, read back once at the start (0.4.0): the Music app gives a track its label when it
+    /// The labels of the last half hour, read back once at the start (0.4.0): the Music app gives a track its label when it
     /// loads it, a minute or more ahead — after a start of Arco that label was gone, and the track had no bit depth (21 Oct
-    /// 2026, Goldberg Variations: 192 without the 24). Quietly: no lines per label, one line with the count.
+    /// 2026, Goldberg Variations: 192 without the 24). Half an hour: a track that already plays was loaded before it began
+    /// (Spiral, 17:08: five minutes missed it). Quietly: no lines per label, one line with the count — then each label once
+    /// to the bridge, which takes the one of the track that plays (its bit depth; the clock was chosen already).
     private func readBackLabels() {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/log")
-        p.arguments = ["show", "--last", "5m", "--style", "ndjson", "--predicate",
+        p.arguments = ["show", "--last", "30m", "--style", "ndjson", "--predicate",
                        #"process == "Music" AND (eventMessage CONTAINS "Asset Log Mapping" OR eventMessage CONTAINS "fmtDescChangeNote" OR eventMessage CONTAINS "mediaFormatinfo")"#]
         let out = Pipe()
         p.standardOutput = out
@@ -176,7 +178,8 @@ final class FormatLog {
                     _ = self.labelLine(message, at: at, quiet: true)
                 }
                 let found = self.labels.count - before
-                if found > 0 { Log.note("label: \(found) read back from the Music app's log of the last minutes") }
+                if found > 0 { Log.note("label: \(found) read back from the Music app's log of the last half hour") }
+                for l in self.labels.values { self.onLabel?(l) }
             }
         }
     }
