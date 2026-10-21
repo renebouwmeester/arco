@@ -41,6 +41,8 @@ final class TransitionMeter {
     func begin(_ title: String, kind: Kind) {
         close()
         open = Open(title: title, kind: kind, from: rate?(), at: Date())
+        // The pause can be written just before the change (Sky Bass: 30 ms before "next track").
+        if let p = lastPause, Date().timeIntervalSince(p) < 1 { open?.signs.append(Self.pausedAtChange) }
         closing?.cancel()
         closing = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(20))
@@ -52,7 +54,10 @@ final class TransitionMeter {
     /// Arco stopped sending: the open window closes as it is.
     func end() { close() }
 
+    private var lastPause: Date?
+
     private func heard(_ line: String) {
+        if line.hasPrefix("music: paused") { lastPause = Date() }
         guard var o = open, !line.contains("transition:") else { return }
         // The Music app paused at the change itself (21 Oct 2026, Sky Bass: Apple's server answered 503, "Asset failed to
         // load", and the Music app paused "for an error") — Arco passes the pause on, but the change was not seamless.
