@@ -185,6 +185,9 @@ extension MenuView {
         return " · " + (khz.rounded() == khz ? String(format: "%.0f", khz) : String(format: "%.1f", khz)) + " kHz" + (fixed ? ", fixed" : "")
     }
 
+    /// " (Roon)", " (Local)", " (UPnP)" — where the music goes (René, 21 Oct 2026).
+    private var kindSuffix: String { bridge.targetKind.map { " (\($0))" } ?? "" }
+
     private var isFailure: Bool { if case .failed = bridge.phase { return true }; return false }
 
     private var sendingLine: String {
@@ -195,8 +198,8 @@ extension MenuView {
         case .switchingOn: return "Switching to \(zone)…"
         case .waitingForMusic: return "Ready — press play in Music to start on \(zone)"
         case .starting: return "Starting on \(zone)…"
-        case .playing: return "Playing on \(zone)" + rateSuffix
-        case .paused: return "Paused on \(zone)" + rateSuffix
+        case .playing: return "Playing on \(zone)" + kindSuffix + rateSuffix
+        case .paused: return "Paused on \(zone)" + kindSuffix + rateSuffix
         case .failed(let message): return message
         }
     }

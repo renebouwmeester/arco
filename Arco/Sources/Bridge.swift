@@ -69,6 +69,15 @@ final class Bridge: ObservableObject {
     /// Experimental: `defaults write nl.renebouwmeester.arco ThisMac -bool true`.
     var isLocal: Bool { if case .local = target { return true }; return false }
     static var localEnabled: Bool { UserDefaults.standard.bool(forKey: "ThisMac") }
+    /// What kind of target Arco plays to, for the menu's line: "Roon", "Local" or "UPnP".
+    var targetKind: String? {
+        switch target {
+        case .roon?: return "Roon"
+        case .local?: return "Local"
+        case .upnp?: return "UPnP"
+        case nil: return nil
+        }
+    }
     func turnOn(local: AudioDevices.LocalOutput) async { await turnOn(.local(local)) }
     private var address: String?
     /// The run Roon plays; where it is in it (from its Time events, about once a second) and since when.
