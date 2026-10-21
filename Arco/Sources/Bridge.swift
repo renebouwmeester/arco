@@ -57,9 +57,12 @@ final class Bridge: ObservableObject {
     /// The source Arco follows: the app that plays (one voice — when the other one starts, it becomes the source and the
     /// first one is paused).
     private var source: PlayerSource
-    private var session: AudioInputSession?
+    /// Roon's audio input on a zone, or a UPnP renderer (see Output).
+    private var session: Output?
     private var store: SliceStore?
-    private var zoneID: String?
+    private var target: Target?
+    /// The output plays to a UPnP renderer (experimental, see UPnP.swift).
+    var isUPnP: Bool { if case .upnp = target { return true }; return false }
     private var address: String?
     /// The run Roon plays; where it is in it (from its Time events, about once a second) and since when.
     private var roonSlice = 0
@@ -188,15 +191,18 @@ final class Bridge: ObservableObject {
 
     // MARK: - On and off
 
-    func turnOn(zone: RoonZone) async {
+    func turnOn(zone: RoonZone) async { await turnOn(.roon(zone)) }
+    func turnOn(renderer: UPnPRenderer) async { await turnOn(.upnp(renderer)) }
+
+    func turnOn(_ target: Target) async {
         turnOff()
         attempt += 1
         let mine = attempt
         /// Still this attempt after an await: no turnOff (a second click) or a newer turnOn came in between.
         func current() -> Bool { attempt == mine && phase == .switchingOn }
         phase = .switchingOn
-        zoneName = zone.name
-        guard case .paired = connection.state else { return fail("Roon is not connected") }
+        zoneName = target.name
+        if case .roon = target { guard case .paired = connection.state else { return fail("Roon is not connected") } }
         guard let arco = AudioDevices.arco else { return fail("Install the Arco audio driver first") }
         // Reading an audio input needs the microphone permission — also for Arco's own loopback. Without it macOS
         // delivers silence, without an error.
@@ -208,14 +214,19 @@ final class Bridge: ObservableObject {
         default:
             return fail(Self.microphoneHint)
         }
-        Log.note("on: zone \(zone.name)")
+        Log.note("on: \(isUPnPTarget(target) ? "UPnP renderer" : "zone") \(target.name)")
         guard await server.start() != nil else { return fail("Could not open the stream port") }
         guard current() else { return }
-        guard let host = connection.coreHost, let address = Discovery.localAddress(toward: host) else {
-            return fail("Can't reach the Roon Core from this Mac")
+        let host: String?
+        switch target {
+        case .roon: host = connection.coreHost
+        case .upnp(let r): host = r.host
+        }
+        guard let host, let address = Discovery.localAddress(toward: host) else {
+            return fail(isUPnPTarget(target) ? "Can't reach \(target.name) from this Mac" : "Can't reach the Roon Core from this Mac")
         }
         self.address = address
-        zoneID = zone.id
+        self.target = target
         // The source: the app that plays now (Music when neither does).
         music.refresh()
         if Self.spotifyEnabled {
@@ -257,7 +268,7 @@ final class Bridge: ObservableObject {
         }
         arcoDevice = arco
         phase = .waitingForMusic
-        connection.setStatus("Playing to \(zone.name)")
+        connection.setStatus("Playing to \(target.name)")
         // The source starts again on Arco; its "playing" begins the session.
         if wasPlaying { source.play() }
     }
@@ -280,7 +291,7 @@ final class Bridge: ObservableObject {
         storeHolder.set(nil)
         store?.closeAll()
         store = nil
-        zoneID = nil
+        target = nil
         restoreOutput()
         nowPlaying = nil
         rate = nil
@@ -288,6 +299,8 @@ final class Bridge: ObservableObject {
         if phase != .off { connection.setStatus("Ready") }
         phase = .off
     }
+
+    private func isUPnPTarget(_ t: Target) -> Bool { if case .upnp = t { return true }; return false }
 
     private static let microphoneHint = "Allow Arco to read its audio output: System Settings › Privacy & Security › Microphone"
 
@@ -300,13 +313,17 @@ final class Bridge: ObservableObject {
     // MARK: - The session in Roon
 
     private func startSession() async {
-        guard let zoneID, let address, let store else { return }
+        guard let target, let address, let store else { return }
         phase = .starting
-        let s = AudioInputSession(connection: connection, zoneID: zoneID)
+        let s: Output
+        switch target {
+        case .roon(let zone): s = RoonOutput(connection: connection, zone: zone)
+        case .upnp(let renderer): s = UPnPOutput(renderer: renderer)
+        }
         s.onEvent = { [weak self] event in self?.roonEvent(event) }
         // ?v=: Roon keeps a source's icon by its URL — bump it when the icon changes
         guard await s.begin(displayName: "Arco", iconURL: "http://\(address):\(server.port)/icon.png?v=5") else {
-            return fail("Roon didn't start a session on this zone")
+            return fail(isUPnPTarget(target) ? "\(target.name) doesn't answer" : "Roon didn't start a session on this zone")
         }
         session = s
         Log.note("session: began on the zone; slices at http://\(address):\(server.port)")
@@ -348,7 +365,8 @@ final class Bridge: ObservableObject {
                 // Roon has the header is converted in place. A skip within a session keeps its half second (7 Oct 22:12, on
                 // the Ellipse: four seconds more after every "next" was too slow); a change of rate after it is caught by
                 // freezing the run, as between two tracks.
-                let settle = self.roonSlice == 0 ? 4.0 : 0.5
+                // A UPnP renderer: its own lead (UPnP.swift — the Ellipse and the Mu-so want 3 s, plus what Arco holds back).
+                let settle = s.lead ?? (self.roonSlice == 0 ? 4.0 : 0.5)
                 for _ in 0..<60 where self.store?.isSettled(slice, seconds: settle) != true { try? await Task.sleep(for: .milliseconds(100)) }
             }
             guard self.session === s else { return }
@@ -455,6 +473,9 @@ final class Bridge: ObservableObject {
         case .stopped(let track):
             // Roon stops a zone five seconds into a pause; a stop while playing is the user's.
             guard current(track) else { return }
+            // Only a stop of the run being written: a UPnP renderer stops when a skip drops the run it played (21 Oct
+            // 2026, the Ellipse) — that is Arco's doing, and the Music app must play on.
+            guard Int(track) == store?.status?.number else { return }
             if phase == .playing, !own { ownUntil = Date().addingTimeInterval(3); source.pause() }
         case .failed(let track, let reason):
             // Only an error of the slice being written counts: a slice dropped at a skip answers a 404 to Roon's last
@@ -863,9 +884,9 @@ final class Bridge: ObservableObject {
     }
 
     private func roonControl(_ control: String) {
-        guard let zoneID else { return }
+        guard let session else { return }
         ownUntil = Date().addingTimeInterval(3)
-        connection.request("\(transportService)/control", ["zone_or_output_id": zoneID, "control": control])
+        session.control(control)
     }
 
     // MARK: - The audio thread

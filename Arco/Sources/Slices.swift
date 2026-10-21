@@ -473,7 +473,9 @@ final class SliceStore: @unchecked Sendable {
         var http = from > 0
             ? "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes \(from)-\(total - 1)/\(total)\r\nContent-Length: \(total - from)\r\n"
             : "HTTP/1.1 200 OK\r\nContent-Length: \(total)\r\n"
-        http += "Content-Type: audio/wav\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n"
+        // The DLNA lines for UPnP renderers (as Basso's bridge sends them; Roon ignores them).
+        http += "Content-Type: audio/wav\r\nAccept-Ranges: bytes\r\ntransferMode.dlna.org: Streaming\r\n"
+            + "contentFeatures.dlna.org: DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000\r\nConnection: close\r\n\r\n"
         var head = Data(http.utf8)
         if headOnly { connection.send(content: head, completion: .contentProcessed { _ in connection.cancel() }); return true }
         if from < 44 { head.append(Self.wavHeader(rate: s.rate, frames: s.frames).dropFirst(from)) }

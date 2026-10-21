@@ -13,6 +13,8 @@ final class ArcoModel: ObservableObject {
     private var lastShown = ""
     let setup = SetupCheck()
     let updater = Updater()
+    /// UPnP renderers (experimental, behind the switch — see UPnP.swift).
+    let finder = UPnPFinder()
     private let tracker = ZoneTracker()
 
     /// The chosen zone is remembered by id and by name: Roon gives a zone a new id when it is grouped or ungrouped,
@@ -41,6 +43,18 @@ final class ArcoModel: ObservableObject {
     }
 
     var selectedZone: RoonZone? { zones.first { $0.id == selectedZoneID } }
+    /// A UPnP renderer chosen instead of a Roon zone: its id is kept as "upnp:<UDN>".
+    var selectedRenderer: UPnPRenderer? { finder.renderers.first { "upnp:" + $0.id == selectedZoneID } }
+    var selectedName: String? { selectedZone?.name ?? selectedRenderer?.name }
+
+    func select(_ renderer: UPnPRenderer) {
+        let id = "upnp:" + renderer.id
+        let switching = id != selectedZoneID
+        selectedZoneID = id
+        UserDefaults.standard.set(id, forKey: Self.zoneIDKey)
+        UserDefaults.standard.set(renderer.name, forKey: Self.zoneNameKey)
+        if switching, bridge.isOn { Task { await bridge.turnOn(renderer: renderer) } }
+    }
 
     /// "Arco on William" — the name in Roon's list of extensions.
     static let extensionName = "Arco on \(Host.current().localizedName ?? "this Mac")"
@@ -57,7 +71,9 @@ final class ArcoModel: ObservableObject {
 
     /// The switch in the menu: send the Music app to the chosen zone, or give the Mac its output back.
     func setSending(_ on: Bool) {
-        if on, let zone = selectedZone { Task { await bridge.turnOn(zone: zone) } } else { bridge.turnOff() }
+        if on, let zone = selectedZone { Task { await bridge.turnOn(zone: zone) } }
+        else if on, let renderer = selectedRenderer { Task { await bridge.turnOn(renderer: renderer) } }
+        else { bridge.turnOff() }
     }
 
     func setVolume(_ zone: RoonZone, to value: Double) { tracker.setVolume(zone, to: value) }
@@ -71,7 +87,7 @@ final class ArcoModel: ObservableObject {
         } else {
             tracker.stop()
             zones = []
-            if bridge.isOn { bridge.turnOff() }
+            if bridge.isOn, !bridge.isUPnP { bridge.turnOff() }
         }
     }
 
@@ -84,7 +100,7 @@ final class ArcoModel: ObservableObject {
         }
         self.zones = zones
         // The chosen zone got a new id (grouped, ungrouped, renamed output): find it back by name.
-        if selectedZone == nil, let name = UserDefaults.standard.string(forKey: Self.zoneNameKey),
+        if selectedZone == nil, selectedZoneID?.hasPrefix("upnp:") != true, let name = UserDefaults.standard.string(forKey: Self.zoneNameKey),
            let again = zones.first(where: { $0.name == name }) {
             select(again)
         }

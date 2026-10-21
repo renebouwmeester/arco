@@ -7,11 +7,13 @@ struct MenuView: View {
     @ObservedObject var model: ArcoModel
     @ObservedObject var bridge: Bridge
     @ObservedObject var setup: SetupCheck
+    @ObservedObject var finder: UPnPFinder
 
     init(model: ArcoModel) {
         self.model = model
         self.bridge = model.bridge
         self.setup = model.setup
+        self.finder = model.finder
     }
 
     private var isPaired: Bool { if case .paired = model.connectionState { return true }; return false }
@@ -116,6 +118,23 @@ struct MenuView: View {
                     }
                 }
             }
+            // UPnP renderers (experimental, behind the switch — see UPnP.swift).
+            if UPnPFinder.enabled {
+                Text("UPnP (Experimental)").font(.caption).foregroundStyle(.secondary)
+                if finder.renderers.isEmpty {
+                    Text("Looking for renderers…").font(.callout).foregroundStyle(.secondary)
+                } else {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(finder.renderers) { r in
+                            let selected = "upnp:" + r.id == model.selectedZoneID
+                            RendererRow(name: r.name, selected: selected,
+                                        line: selected && bridge.isOn ? bridge.nowPlaying.map { [$0.title, $0.artist].filter { !$0.isEmpty }.joined(separator: " · ") } : nil) {
+                                model.select(r)
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -128,7 +147,7 @@ extension MenuView {
                 Text("Send to Roon").font(.body.weight(.medium))
             }
             .toggleStyle(.switch)
-            .disabled(!Bridge.driverInstalled || (model.selectedZone == nil && !bridge.isOn))
+            .disabled(!Bridge.driverInstalled || (model.selectedName == nil && !bridge.isOn))
             Text(sendingLine)
                 .font(.caption)
                 .foregroundStyle(isFailure ? Color.red : .secondary)
@@ -158,9 +177,9 @@ extension MenuView {
 
     private var sendingLine: String {
         if !Bridge.driverInstalled { return "The Arco audio driver isn't installed yet" }
-        let zone = bridge.zoneName ?? model.selectedZone?.name ?? "a zone"
+        let zone = bridge.zoneName ?? model.selectedName ?? "a zone"
         switch bridge.phase {
-        case .off: return model.selectedZone == nil ? "Pick a zone below first" : "Switch on to play Apple Music in Roon on this Mac"
+        case .off: return model.selectedName == nil ? "Pick a zone below first" : "Switch on to play Apple Music in Roon on this Mac"
         case .switchingOn: return "Switching to \(zone)…"
         case .waitingForMusic: return "Ready — press play in Music to start on \(zone)"
         case .starting: return "Starting on \(zone)…"
@@ -168,6 +187,35 @@ extension MenuView {
         case .paused: return "Paused on \(zone)" + rateSuffix
         case .failed(let message): return message
         }
+    }
+}
+
+/// A UPnP renderer in the list: like a zone row, with what Arco sends to it.
+private struct RendererRow: View {
+    let name: String
+    let selected: Bool
+    let line: String?
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(selected ? Color.accentColor : .secondary)
+                    .frame(width: 18)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(name).font(.body)
+                    if let line, !line.isEmpty { Text("▶︎ " + line).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 4).padding(.horizontal, 6)
+            .contentShape(Rectangle())
+            .background(RoundedRectangle(cornerRadius: 6).fill(hovering ? Color.primary.opacity(0.08) : .clear))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
     }
 }
 
