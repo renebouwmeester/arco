@@ -25,11 +25,14 @@ protocol Output: AnyObject {
 enum Target: Equatable {
     case roon(RoonZone)
     case upnp(UPnPRenderer)
+    /// This Mac's own output (a DAC): the Music app plays to it directly, Arco only sets its clock per track.
+    case local(AudioDevices.LocalOutput)
 
     var name: String {
         switch self {
         case .roon(let z): return z.name
         case .upnp(let r): return r.name
+        case .local(let o): return o.name
         }
     }
 }

@@ -118,6 +118,19 @@ struct MenuView: View {
                     }
                 }
             }
+            // This Mac's outputs (experimental, behind the switch — see Bridge.isLocal): the clock per track for a DAC.
+            if Bridge.localEnabled {
+                Text("This Mac (Experimental)").font(.caption).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(AudioDevices.outputs) { out in
+                        let selected = "local:" + out.id == model.selectedZoneID
+                        RendererRow(name: out.name, selected: selected,
+                                    line: selected && bridge.isOn ? bridge.rate.map { "Clock " + MenuBarLabel.short($0) + " kHz" } : nil) {
+                            model.select(out)
+                        }
+                    }
+                }
+            }
             // UPnP renderers (experimental, behind the switch — see UPnP.swift).
             if UPnPFinder.enabled {
                 Text("UPnP (Experimental)").font(.caption).foregroundStyle(.secondary)

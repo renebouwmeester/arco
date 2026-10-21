@@ -63,6 +63,13 @@ final class Bridge: ObservableObject {
     private var target: Target?
     /// The output plays to a UPnP renderer (experimental, see UPnP.swift).
     var isUPnP: Bool { if case .upnp = target { return true }; return false }
+    /// "This Mac" (21 Oct 2026, René: "kunnen we Arco ook naar een local device laten afspelen? Voordeel zou dan de
+    /// autoclocker moeten zijn"): the Music app plays straight to a DAC of this Mac, and Arco only sets the DAC's clock per
+    /// track — from the label, at the boundary, never in the middle of a track. No capture, no Roon, no Arco driver.
+    /// Experimental: `defaults write nl.renebouwmeester.arco ThisMac -bool true`.
+    var isLocal: Bool { if case .local = target { return true }; return false }
+    static var localEnabled: Bool { UserDefaults.standard.bool(forKey: "ThisMac") }
+    func turnOn(local: AudioDevices.LocalOutput) async { await turnOn(.local(local)) }
     private var address: String?
     /// The run Roon plays; where it is in it (from its Time events, about once a second) and since when.
     private var roonSlice = 0
@@ -203,6 +210,7 @@ final class Bridge: ObservableObject {
         func current() -> Bool { attempt == mine && phase == .switchingOn }
         phase = .switchingOn
         zoneName = target.name
+        if case .local(let out) = target { return await turnOnLocal(out, current: current) }
         if case .roon = target { guard case .paired = connection.state else { return fail("Roon is not connected") } }
         guard let arco = AudioDevices.arco else { return fail("Install the Arco audio driver first") }
         // Reading an audio input needs the microphone permission — also for Arco's own loopback. Without it macOS
@@ -222,6 +230,7 @@ final class Bridge: ObservableObject {
         switch target {
         case .roon: host = connection.coreHost
         case .upnp(let r): host = r.host
+        case .local: host = nil   // never here: turnOnLocal
         }
         guard let host, let address = Discovery.localAddress(toward: host) else {
             return fail(isUPnPTarget(target) ? "Can't reach \(target.name) from this Mac" : "Can't reach the Roon Core from this Mac")
@@ -303,6 +312,56 @@ final class Bridge: ObservableObject {
         phase = .off
     }
 
+    /// This Mac: the DAC becomes the system's output, and its clock follows each track (see isLocal).
+    private func turnOnLocal(_ out: AudioDevices.LocalOutput, current: () -> Bool) async {
+        guard let dac = AudioDevices.device(uid: out.id) else { return fail("\(out.name) isn't connected") }
+        Log.note("on: this Mac — \(out.name), the clock per track")
+        target = .local(out)
+        music.refresh()
+        source = music
+        formats.start()
+        // Basso's lesson for a change of output: pause, change, resume.
+        let wasPlaying = music.state == .playing
+        if wasPlaying {
+            music.pause()
+            try? await Task.sleep(for: .milliseconds(300))
+            guard current() else { return }
+        }
+        AudioDevices.setDefaultOutput(dac)
+        arcoDevice = dac
+        let now = AudioDevices.sampleRate(of: dac) ?? 0
+        capture.rate = now
+        rate = now
+        Log.note("device: \(out.name) at \(Int(now)) Hz (rates \(AudioDevices.availableRates(of: dac).map { String(Int($0)) }.joined(separator: ", ")))")
+        rateWatch = AudioDevices.watchSampleRate(of: dac) { [weak self] rate in
+            MainActor.assumeIsolated { self?.deviceRateChanged(rate) }
+        }
+        phase = .waitingForMusic
+        if wasPlaying { music.play() }
+    }
+
+    /// This Mac: the Music app's changes — the clock at each new track, the phase with play and pause.
+    private func localSourceChanged(_ state: SourceState, _ track: SourceTrack?, _ changed: Bool) {
+        switch phase {
+        case .waitingForMusic:
+            guard state == .playing, let t = track ?? music.track else { return }
+            phase = .playing
+            meter.begin(t.title, kind: .start)
+            followClock(t, kind: .start)
+        case .playing, .paused, .starting:
+            if changed, let track {
+                // The Music app's own word, or it named this track as the next one: a natural change. Else a jump.
+                let natural = formats.transition(to: track.title) ?? (formats.named(track.title) != nil)
+                meter.begin(track.title, kind: natural ? .natural : .skip)
+                Log.note("next track: \(track.title) — \(natural ? "a natural change" : "a jump")")
+                if state == .playing { followClock(track, kind: natural ? .natural : .skip) }
+            }
+            if state == .playing { phase = .playing } else { phase = .paused }
+        default:
+            break
+        }
+    }
+
     private func isUPnPTarget(_ t: Target) -> Bool { if case .upnp = t { return true }; return false }
 
     private static let microphoneHint = "Allow Arco to read its audio output: System Settings › Privacy & Security › Microphone"
@@ -322,6 +381,7 @@ final class Bridge: ObservableObject {
         switch target {
         case .roon(let zone): s = RoonOutput(connection: connection, zone: zone)
         case .upnp(let renderer): s = UPnPOutput(renderer: renderer)
+        case .local: return       // no session: the Music app plays to the DAC itself
         }
         s.onEvent = { [weak self] event in self?.roonEvent(event) }
         // ?v=: Roon keeps a source's icon by its URL — bump it when the icon changes
@@ -549,6 +609,7 @@ final class Bridge: ObservableObject {
     private func sourceChanged(_ s: PlayerSource, _ state: SourceState, _ track: SourceTrack?, _ changed: Bool) {
         Log.note("\(s.name.lowercased()): \(state.rawValue)\(changed ? " — \(track?.title ?? "-")" : "")\(s === source ? "" : " (not the source)")")
         guard phase != .switchingOn else { return }   // turnOn chooses the source itself, and pauses it on purpose
+        if isLocal { if s === music { localSourceChanged(state, track, changed) }; return }
         if s === spotify, !Self.spotifyEnabled { return }
         if s !== source {
             // The other app starts playing: it becomes the source (one voice), the first one pauses, and a new run begins

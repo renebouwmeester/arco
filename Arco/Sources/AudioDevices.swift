@@ -54,6 +54,31 @@ enum AudioDevices {
         }
     }
 
+    /// This Mac's outputs (21 Oct 2026, "This Mac" — Arco as the clock for a local DAC): every device with output streams,
+    /// except Arco's own.
+    struct LocalOutput: Identifiable, Equatable { let id: String; let name: String }
+    static var outputs: [LocalOutput] {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
+                                                 mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size) == noErr else { return [] }
+        var devices = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &devices) == noErr else { return [] }
+        return devices.compactMap { device in
+            var o = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreams,
+                                               mScope: kAudioObjectPropertyScopeOutput, mElement: kAudioObjectPropertyElementMain)
+            var osize: UInt32 = 0
+            guard AudioObjectGetPropertyDataSize(device, &o, 0, nil, &osize) == noErr, osize > 0,
+                  let uid = uid(of: device), uid != arcoUID else { return nil }
+            var name: Unmanaged<CFString>?
+            var nsize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+            var n = AudioObjectPropertyAddress(mSelector: kAudioObjectPropertyName,
+                                               mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+            guard AudioObjectGetPropertyData(device, &n, 0, nil, &nsize, &name) == noErr, let name else { return nil }
+            return LocalOutput(id: uid, name: name.takeRetainedValue() as String)
+        }
+    }
+
     static var defaultOutput: AudioDeviceID? {
         var id = AudioDeviceID(kAudioObjectUnknown)
         var size = UInt32(MemoryLayout<AudioDeviceID>.size)

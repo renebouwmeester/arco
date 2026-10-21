@@ -45,7 +45,21 @@ final class ArcoModel: ObservableObject {
     var selectedZone: RoonZone? { zones.first { $0.id == selectedZoneID } }
     /// A UPnP renderer chosen instead of a Roon zone: its id is kept as "upnp:<UDN>".
     var selectedRenderer: UPnPRenderer? { finder.renderers.first { "upnp:" + $0.id == selectedZoneID } }
-    var selectedName: String? { selectedZone?.name ?? selectedRenderer?.name }
+    var selectedName: String? { selectedZone?.name ?? selectedRenderer?.name ?? selectedLocal?.name }
+    /// This Mac's output chosen (experimental, see Bridge.isLocal): its id is kept as "local:<UID>".
+    var selectedLocal: AudioDevices.LocalOutput? {
+        guard let id = selectedZoneID, id.hasPrefix("local:") else { return nil }
+        return AudioDevices.outputs.first { "local:" + $0.id == id }
+    }
+
+    func select(_ out: AudioDevices.LocalOutput) {
+        let id = "local:" + out.id
+        let switching = id != selectedZoneID
+        selectedZoneID = id
+        UserDefaults.standard.set(id, forKey: Self.zoneIDKey)
+        UserDefaults.standard.set(out.name, forKey: Self.zoneNameKey)
+        if switching, bridge.isOn { Task { await bridge.turnOn(local: out) } }
+    }
 
     func select(_ renderer: UPnPRenderer) {
         let id = "upnp:" + renderer.id
@@ -73,6 +87,7 @@ final class ArcoModel: ObservableObject {
     func setSending(_ on: Bool) {
         if on, let zone = selectedZone { Task { await bridge.turnOn(zone: zone) } }
         else if on, let renderer = selectedRenderer { Task { await bridge.turnOn(renderer: renderer) } }
+        else if on, let out = selectedLocal { Task { await bridge.turnOn(local: out) } }
         else { bridge.turnOff() }
     }
 
@@ -87,7 +102,7 @@ final class ArcoModel: ObservableObject {
         } else {
             tracker.stop()
             zones = []
-            if bridge.isOn, !bridge.isUPnP { bridge.turnOff() }
+            if bridge.isOn, !bridge.isUPnP, !bridge.isLocal { bridge.turnOff() }
         }
     }
 
@@ -100,7 +115,7 @@ final class ArcoModel: ObservableObject {
         }
         self.zones = zones
         // The chosen zone got a new id (grouped, ungrouped, renamed output): find it back by name.
-        if selectedZone == nil, selectedZoneID?.hasPrefix("upnp:") != true, let name = UserDefaults.standard.string(forKey: Self.zoneNameKey),
+        if selectedZone == nil, selectedZoneID?.hasPrefix("upnp:") != true, selectedZoneID?.hasPrefix("local:") != true, let name = UserDefaults.standard.string(forKey: Self.zoneNameKey),
            let again = zones.first(where: { $0.name == name }) {
             select(again)
         }
