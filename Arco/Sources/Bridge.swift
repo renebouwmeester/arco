@@ -421,7 +421,8 @@ final class Bridge: ObservableObject {
         case nil:
             break
         }
-        return AudioInputSession.info(title: track.title, artist: track.artist, album: track.album, imageURL: imageURL)
+        return AudioInputSession.info(title: track.title, artist: track.artist, album: track.album, imageURL: imageURL,
+                                      lengthSeconds: track.durationMs > 0 ? track.durationMs / 1000 : nil)
     }
 
     private func roonEvent(_ event: AudioInputSession.Event) {

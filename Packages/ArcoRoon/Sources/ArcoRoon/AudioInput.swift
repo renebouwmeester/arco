@@ -118,13 +118,17 @@ public final class AudioInputSession {
     }
 
     /// The track information Roon shows: one, two and three lines, the cover, and what the transport may do.
-    public static func info(title: String, artist: String, album: String, imageURL: String?,
+    /// `lengthSeconds` (0.4.0, a trial): the song's own length — a streamer's display showed the length of the whole run
+    /// (one continuous stream, many songs). Roon's audio input takes an optional `length`; whether its counter then also
+    /// starts again at a song in the middle of a run is what the trial shows.
+    public static func info(title: String, artist: String, album: String, imageURL: String?, lengthSeconds: Int? = nil,
                             pauseAllowed: Bool = true, seekAllowed: Bool = false) -> JSON {
         var info: JSON = ["is_seek_allowed": seekAllowed, "is_pause_allowed": pauseAllowed,
                           "one_line": ["line1": title],
                           "two_line": ["line1": title, "line2": artist],
                           "three_line": ["line1": title, "line2": artist, "line3": album]]
         if let imageURL { info["image_url"] = imageURL }
+        if let lengthSeconds, lengthSeconds > 0 { info["length"] = lengthSeconds }
         return info
     }
 }
