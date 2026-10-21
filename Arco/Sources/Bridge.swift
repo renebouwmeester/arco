@@ -342,6 +342,7 @@ final class Bridge: ObservableObject {
 
     /// This Mac: the Music app's changes — the clock at each new track, the phase with play and pause.
     private func localSourceChanged(_ state: SourceState, _ track: SourceTrack?, _ changed: Bool) {
+        if let t = track ?? music.track { nowPlaying = (t.title, t.artist) }   // the menu shows what plays, as for a zone
         switch phase {
         case .waitingForMusic:
             guard state == .playing, let t = track ?? music.track else { return }

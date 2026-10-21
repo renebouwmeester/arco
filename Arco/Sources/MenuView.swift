@@ -125,7 +125,7 @@ struct MenuView: View {
                     ForEach(AudioDevices.outputs) { out in
                         let selected = "local:" + out.id == model.selectedZoneID
                         RendererRow(name: out.name, selected: selected,
-                                    line: selected && bridge.isOn ? bridge.rate.map { "Clock " + MenuBarLabel.short($0) + " kHz" } : nil) {
+                                    line: selected && bridge.isOn ? bridge.nowPlaying.map { [$0.title, $0.artist].filter { !$0.isEmpty }.joined(separator: " · ") } : nil) {
                             model.select(out)
                         }
                     }
