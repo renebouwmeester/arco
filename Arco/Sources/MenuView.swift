@@ -133,6 +133,15 @@ extension MenuView {
                 .font(.caption)
                 .foregroundStyle(isFailure ? Color.red : .secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            // 0.4.0: the Music app below volume 100 scales every sample — bit-perfect only at 100.
+            if bridge.isOn, let v = bridge.musicVolume, v < 100 {
+                HStack(spacing: 6) {
+                    Text("Music volume \(v) — not bit-perfect").font(.caption).foregroundStyle(.orange)
+                    Spacer()
+                    Button("Set to 100") { bridge.setMusicVolumeTo100() }
+                        .buttonStyle(.borderless).font(.caption)
+                }
+            }
         }
     }
 

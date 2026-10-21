@@ -41,6 +41,11 @@ final class Bridge: ObservableObject {
     @Published private(set) var zoneName: String?
     /// The rate of the Arco device while sending: what Music set for this track (with Lossless on), 44.1 kHz for Spotify.
     @Published private(set) var rate: Double?
+    /// The bit depth of the track that plays, from the Music app's label (0.4.0) — nil when the label didn't say.
+    @Published private(set) var bits: Int?
+    /// The Music app's volume while Arco sends it (0.4.0): below 100 the music isn't bit-perfect — the menu says so.
+    @Published private(set) var musicVolume: Int?
+    func setMusicVolumeTo100() { music.setVolume(100); musicVolume = 100; Log.note("music: volume set to 100 (bit-perfect)") }
     /// What Roon plays from Arco now — set when Roon starts a run or reaches the next track in it. The menu shows this for
     /// Arco's zone: Roon's own "now playing" of an audio-input session lags behind (Apple's title stayed long after
     /// Spotify had taken over).
@@ -69,6 +74,8 @@ final class Bridge: ObservableObject {
     private let clock = TrackClock()
     /// The Music app's own log of the formats it sets up (0.3.3, see FormatLog) — first source of a track's rate.
     private let formats = FormatLog()
+    /// One line per change of track: how it went (0.4.0, see TransitionMeter).
+    private let meter = TransitionMeter()
     private var lastChangeAt: Date?
     /// Until when a lossless line may still correct the clock of this track (9 Oct): not once its rate came from a
     /// lossless line — later lines are the next track's, loaded ahead (20:06:53: after a restart mid-track, the next
@@ -98,6 +105,20 @@ final class Bridge: ObservableObject {
             }
         }
         formats.onLossless = { [weak self] at, rate in self?.lateLossless(at: at, rate: rate) }
+        formats.onLabel = { [weak self] label in self?.labelArrived(label) }
+        meter.rate = { [weak self] in self?.rate }
+        // The Music app's volume, every fifteen seconds while Arco sends it (0.4.0).
+        Task { @MainActor [weak self] in
+            while true {
+                try? await Task.sleep(for: .seconds(15))
+                guard let self else { return }
+                let v = self.isOn && self.source === self.music ? self.music.volume() : nil
+                if v != self.musicVolume {
+                    if let v, v < 100 { Log.note("music: volume \(v) — not bit-perfect") }
+                    self.musicVolume = v
+                }
+            }
+        }
         formats.deviceRate = { [weak self] in Int(self?.capture.rate ?? 0) }
         let holder = storeHolder, capture = capture
         capture.onAudio = { pcm, frames, firstSound in holder.write(pcm, frames, firstSound, rate: capture.rate) }
@@ -265,6 +286,8 @@ final class Bridge: ObservableObject {
         restoreOutput()
         nowPlaying = nil
         rate = nil
+        bits = nil
+        meter.end()
         if phase != .off { connection.setStatus("Ready") }
         phase = .off
     }
@@ -290,6 +313,7 @@ final class Bridge: ObservableObject {
         }
         session = s
         Log.note("session: began on the zone; slices at http://\(address):\(server.port)")
+        if let t = source.track { meter.begin(t.title, kind: .start) }
         // The first run: the current track, from where the source is now.
         guard let track = source.track else { return }
         let left = max(1000, track.durationMs - Int(source.position() * 1000))
@@ -528,6 +552,7 @@ final class Bridge: ObservableObject {
                     Log.note("length: \(track.title) — \(ms / 1000) s, from the Music app's log")
                 }
                 if track.durationMs <= 0 { refreshLength(of: track.id) }
+                meter.begin(track.title, kind: natural ? .natural : .skip)
                 if state == .playing { followClock(track, kind: natural ? .natural : .skip) }
                 if let mark = store.startTrack(.init(info: info, durationMs: track.durationMs), newRun: !natural) {
                     marks.append((mark.number, mark.ms, info))
@@ -603,6 +628,7 @@ final class Bridge: ObservableObject {
 
     /// A new track of the Music app: its own rate, and the Arco device set to it.
     private func followClock(_ track: SourceTrack, kind: FormatLog.Change) {
+        bits = source === music ? formats.label(for: track.title)?.bits : nil   // 0.4.0: what the label said so far
         guard TrackClock.enabled, source === music, let arco = arcoDevice else { return }
         if fixedNow { lastChangeAt = Date(); correctable = nil; return }   // 0.3.7: the zone's rate is fixed
         let change = Date(), previous = lastChangeAt
@@ -616,7 +642,12 @@ final class Bridge: ObservableObject {
             let now = Int(AudioDevices.sampleRate(of: arco) ?? 0)
             // 0.3.5: named as the next track, its rate is the line after that (none: the same) — no window guessing.
             var fromLog: (rate: Int, how: String)?
-            if kind == .natural, let n = self.formats.named(track.title) {
+            // 0.4.0: the Music app's label names this very track, its rate and that it is lossless — first of all. A natural
+            // change has it long before (the next track is loaded 60–100 s ahead); a skip or a start waits for it.
+            if let l = await self.formats.waitForLabel(track.title, seconds: kind == .natural ? 0 : FormatLog.wait) {
+                fromLog = (l.rate, "the Music app's label \(l.label)")
+                if current() { self.bits = l.bits }
+            } else if kind == .natural, let n = self.formats.named(track.title) {
                 fromLog = n.rate.map { ($0, "the Music app's log, the line after it was named") } ?? (now, FormatLog.sameHow)
             } else {
                 fromLog = await self.formats.rate(kind, change: change, previous: previous, current: now)
@@ -648,8 +679,10 @@ final class Bridge: ObservableObject {
             // Always in the log (0.3.1): a tester's "96 kHz" track stayed at 44.1 — what the Music app says later settles it.
             Log.note("clock: \(track.title) — five seconds in, the Music app says \(Int(r)) Hz")
             guard Int(r) != read.rate else { return }
+            // 0.4.0: never a change of clock this far into a track (Roon has started to play it): it plays on, resampled,
+            // and the rate is remembered for the next time.
             self.clock.remember(Int(r), for: track)
-            await self.setClock(Int(r), for: track, how: "the Music app, five seconds in", fromStart: false)
+            Log.note("clock: \(track.title) — stays at \(read.rate) Hz, plays on resampled (\(Int(r)) Hz remembered)")
         }
     }
 
@@ -670,12 +703,38 @@ final class Bridge: ObservableObject {
         // once, before the Music app may change the device itself (8 Oct, Traces of a Song: 0.65 s after its line — the
         // run was then frozen in the middle of the track, and setClock found Arco "there already").
         let early = at.timeIntervalSince(change) < FormatLog.wait && music.position() < 3
-        if early { store?.restartTrackAtNewRate() }
-        Log.note("clock: \(track.title) — the Music app's log now says \(rate) Hz (it started otherwise): correcting\(early ? ", from the track's start" : "")")
+        // 0.4.0: only early — back to the track's start before Roon plays it (5–7 s behind). Later, a change of clock is
+        // heard: the track plays on, resampled, and its rate is remembered (Basso's rule since 21 Oct 2026).
+        guard early else {
+            Log.note("clock: \(track.title) — the Music app's log now says \(rate) Hz, but the track plays: it stays, resampled (remembered)")
+            return
+        }
+        store?.restartTrackAtNewRate()
+        Log.note("clock: \(track.title) — the Music app's log now says \(rate) Hz (it started otherwise): correcting, from the track's start")
         Task { @MainActor [weak self] in
             guard let self else { return }
             await self.setClock(rate, for: track, how: "the Music app's log, late", fromStart: early, evenIfThere: early)
         }
+    }
+
+    /// A lossless label arrived (0.4.0): the bit depth for the menu bar, and — for the track that plays, when the Music app
+    /// switched it to a better track of another rate — the clock, but only in the track's first seconds (from its start,
+    /// before Roon plays it). Later it plays on resampled, and the rate is remembered.
+    private func labelArrived(_ l: FormatLog.Label) {
+        guard isOn, source === music, let track = music.track, l.title == track.title else { return }
+        if bits != l.bits { bits = l.bits }
+        guard TrackClock.enabled, !fixedNow, let arco = arcoDevice,
+              AudioDevices.bestRate(Double(l.rate), of: arco) != AudioDevices.sampleRate(of: arco) else { return }
+        // Within the choice of followClock (it waits for this label itself): nothing to correct yet.
+        if let change = lastChangeAt, Date().timeIntervalSince(change) < FormatLog.wait + 0.5 { return }
+        clock.remember(l.rate, for: track)
+        guard music.state == .playing, music.position() < 3 else {
+            Log.note("clock: \(track.title) — the label now says \(l.rate) Hz, but the track plays: it stays, resampled (remembered)")
+            return
+        }
+        store?.restartTrackAtNewRate()
+        Log.note("clock: \(track.title) — the label now says \(l.rate) Hz: correcting, from the track's start")
+        Task { @MainActor [weak self] in await self?.setClock(l.rate, for: track, how: "the Music app's label, late", fromStart: true, evenIfThere: true) }
     }
 
     /// Basso's way for a change of clock: pause the Music app, set the rate, back to the start of the track if it only
@@ -739,6 +798,7 @@ final class Bridge: ObservableObject {
     private func switchSource(to s: PlayerSource) {
         let old = source
         source = s
+        if s !== music { bits = nil }
         Log.note("source: \(old.name) → \(s.name)")
         if old.state == .playing { ownUntil = Date().addingTimeInterval(3); old.pause() }
         if let rate = s.preferredRate, let arco = arcoDevice, AudioDevices.sampleRate(of: arco) != rate {

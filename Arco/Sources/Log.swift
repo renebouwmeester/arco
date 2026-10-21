@@ -23,7 +23,11 @@ enum Log {
         }
     }
 
+    /// Every line, as it is written (0.4.0: the transition meter listens).
+    nonisolated(unsafe) static var observer: ((String) -> Void)?
+
     static func note(_ message: String) {
+        observer?(message)
         let line = "\(formatter.string(from: Date())) \(message)\n"
         queue.async {
             let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? Int) ?? 0

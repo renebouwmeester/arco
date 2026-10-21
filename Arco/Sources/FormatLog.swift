@@ -77,6 +77,35 @@ final class FormatLog {
     /// The log has given a line since it started: it works here, and silence means "the same format".
     private(set) var seenAny = false
     private static let lossless: Set<String> = ["qlac", "alac", "lpcm"]
+
+    // MARK: The label (0.4.0)
+    // The Music app gives each track it loads a label ("I/ICW") and names it with the track's title ("MP->AV Asset Log
+    // Mapping: … (175085::175098) Dignity (Alternate Version) -> <AVPlayerItem: …> I/ICW"). Each audio track it sets up for
+    // that label comes with the rate as its time scale, and a priming duration that tells the codec: AAC has its fixed
+    // 2112 frames ("audio track 2 priming duration {2112/44100=0.048}"), lossless none ("{0/44100}"). Measured with Basso
+    // on 21 Oct 2026 (Knives Out: tracks 2–4 AAC, track 5 ALAC 24-bit). So a line that names the track, its rate and
+    // whether it is lossless — no window guessing. 2 ms after it: "mediaFormatinfo … sdFormatID = alac … sdBitDepth = 24 bit,
+    // asbdSampleRate = 96.0 kHz" — the bit depth, for every track (the decoder's "from 24-bit source" only comes with a new
+    // audio queue).
+    struct Label: Equatable { let label: String; let title: String; let rate: Int; let track: Int; var bits: Int?; let at: Date }
+    private var labelTitles: [String: String] = [:]
+    private var labels: [String: Label] = [:]          // by title: the lossless label, the latest
+    private var aacSeen: [String: Int] = [:]
+    /// A lossless label arrived or changed (a track loaded ahead, or the one that plays switching to a better track).
+    var onLabel: ((Label) -> Void)?
+
+    /// The lossless label of the track with this title, if the Music app gave one.
+    func label(for title: String) -> Label? { labels[title] }
+
+    /// Waits up to `seconds` for the lossless label of this track.
+    func waitForLabel(_ title: String, seconds: TimeInterval) async -> Label? {
+        let until = Date().addingTimeInterval(seconds)
+        while true {
+            if let l = labels[title] { return l }
+            if Date() >= until { return nil }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+    }
     /// Each lossless line (outside a quiet moment): for a late correction (Bridge).
     var onLossless: ((Date, Int) -> Void)?
     /// Moments after which lines are about the track that already plays (a resume, Arco's own change of clock).
@@ -87,7 +116,7 @@ final class FormatLog {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/log")
         p.arguments = ["stream", "--style", "ndjson", "--predicate",
-                       #"process == "Music" AND (eventMessage CONTAINS "Creating AudioQueue with format" OR eventMessage CONTAINS "ITMPAVItemCount INIT" OR eventMessage CONTAINS "isInContiguousAlbum" OR eventMessage CONTAINS "loadedTimeRanges" OR eventMessage CONTAINS "setTargetContentItemID")"#]
+                       #"process == "Music" AND (eventMessage CONTAINS "Creating AudioQueue with format" OR eventMessage CONTAINS "ITMPAVItemCount INIT" OR eventMessage CONTAINS "isInContiguousAlbum" OR eventMessage CONTAINS "loadedTimeRanges" OR eventMessage CONTAINS "setTargetContentItemID" OR eventMessage CONTAINS "Asset Log Mapping" OR eventMessage CONTAINS "fmtDescChangeNote" OR eventMessage CONTAINS "mediaFormatinfo")"#]
         let out = Pipe(), err = Pipe()
         p.standardOutput = out
         p.standardError = err
@@ -121,6 +150,7 @@ final class FormatLog {
         entries = []
         seenAny = false
         next = nil; titles = [:]; lengths = [:]
+        labelTitles = [:]; labels = [:]; aacSeen = [:]
     }
 
     /// Lines from now on (for `seconds`) are about the track that already plays.
@@ -185,6 +215,7 @@ final class FormatLog {
             guard let json = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
                   let message = json["eventMessage"] as? String else { continue }
             if nextLine(message) { continue }
+            if labelLine(message) { continue }
             guard let r = message.range(of: #"sampleRate:(\d+)"#, options: .regularExpression),
                   let rate = Int(message[r].filter(\.isNumber)) else { continue }
             var format = "?"
@@ -212,6 +243,53 @@ final class FormatLog {
             if entries.count > 50 { entries.removeFirst(entries.count - 50) }
             Log.note("format log: the Music app set up \(format) at \(rate) Hz")
         }
+    }
+
+    /// The label lines (0.4.0, see Label). True when the message was one of them.
+    private func labelLine(_ m: String) -> Bool {
+        func groups(_ pattern: String) -> [String]? {
+            guard let re = try? NSRegularExpression(pattern: pattern),
+                  let x = re.firstMatch(in: m, range: NSRange(m.startIndex..., in: m)) else { return nil }
+            return (1..<x.numberOfRanges).compactMap { Range(x.range(at: $0), in: m).map { String(m[$0]) } }
+        }
+        if m.contains("Asset Log Mapping") {
+            if let g = groups(#"\([\d+]+::\d+\) (.*) -> <AVPlayerItem: 0x[0-9a-f]+> (I/[A-Za-z0-9]+)"#), g.count == 2 {
+                labelTitles[g[1]] = g[0]
+                if labelTitles.count > 400 { labelTitles.removeAll(); labels.removeAll(); aacSeen.removeAll() }
+            }
+            return true
+        }
+        if m.contains("fmtDescChangeNote") {
+            guard let g = groups(#"\|(I/[A-Za-z0-9]+)\.\d+>: audio track (\d+) priming duration \{(-?\d+)/(\d+)="#), g.count == 4,
+                  let title = labelTitles[g[0]], let track = Int(g[1]), let priming = Int(g[2]), let rate = Int(g[3]), rate >= 8_000 else { return true }
+            if priming != 0 {
+                if labels[title] == nil, aacSeen[g[0]] != track {
+                    aacSeen[g[0]] = track
+                    Log.note("label: \(title) — track \(track) is AAC at \(rate) Hz (doesn't count)")
+                }
+                return true
+            }
+            let old = labels[title]
+            guard old?.rate != rate || old?.label != g[0] else { return true }
+            let l = Label(label: g[0], title: title, rate: rate, track: track, bits: nil, at: Date())
+            labels[title] = l
+            Log.note("label: \(title) — \(rate) Hz, lossless (\(g[0]), track \(track))\(old.map { ", was \($0.rate)" } ?? "")")
+            onLabel?(l)
+            return true
+        }
+        if m.contains("mediaFormatinfo") {
+            guard let b = groups(#"sdBitDepth = (\d+) bit"#)?.first.flatMap({ Int($0) }),
+                  let khz = groups(#"asbdSampleRate = ([\d.]+) kHz"#)?.first.flatMap({ Double($0) }) else { return true }
+            let rate = Int((khz * 1000).rounded())
+            guard var l = labels.values.filter({ $0.rate == rate && Date().timeIntervalSince($0.at) < 3 }).max(by: { $0.at < $1.at }),
+                  l.bits != b else { return true }
+            l.bits = b
+            labels[l.title] = l
+            Log.note("label: \(l.title) — \(b)-bit")
+            onLabel?(l)
+            return true
+        }
+        return false
     }
 
     /// The lines about the next track (0.3.5). True when the message was one of them.

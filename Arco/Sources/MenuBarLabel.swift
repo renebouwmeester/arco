@@ -1,5 +1,6 @@
 // The menu bar item (0.3.1, René: "de samplerate in de menubar naast het icoon"): Arco's icon, and while Arco sends to
 // Roon the rate Roon receives next to it — "44.1", "96", "192" — so the clock per track shows without opening the menu.
+// 0.4.0: with the bit depth in front when known — "24/96".
 // Next to the icon, not instead of it: the icon is Arco's, and with nothing sent there is no rate. A checkbox in the menu
 // turns it off.
 import SwiftUI
@@ -13,7 +14,8 @@ struct MenuBarLabel: View {
         HStack(spacing: 2) {
             Image("MenuIcon")   // a template: macOS tints it for a light or dark menu bar
             if showRate, bridge.isSending, let rate = bridge.rate, rate > 0 {
-                Text(Self.short(rate)).monospacedDigit()
+                // 0.4.0: with the bit depth when the Music app's label gave it — "24/96" (an idea of 8 Oct).
+                Text(bridge.bits.map { "\($0)/\(Self.short(rate))" } ?? Self.short(rate)).monospacedDigit()
             }
         }
     }

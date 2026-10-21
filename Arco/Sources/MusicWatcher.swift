@@ -83,6 +83,14 @@ final class MusicWatcher: PlayerSource {
         return Double(text.replacingOccurrences(of: ",", with: "."))
     }
 
+    /// The Music app's own volume (0.4.0): only at 100 does it play bit-exact (measured on macOS 27 with Basso's set of test
+    /// files, 15 Oct 2026: 100.00% at 100; below it every sample is scaled).
+    func volume() -> Int? {
+        guard Self.isRunning, let text = AppleScript.run(#"tell application "Music" to get sound volume"#)?.stringValue else { return nil }
+        return Int(text)
+    }
+    func setVolume(_ v: Int) { AppleScript.run("tell application \"Music\" to set sound volume to \(v)") }
+
     /// The player state asked directly (the notification can come a second late).
     func isPlayingNow() -> Bool {
         guard Self.isRunning, let text = AppleScript.run(#"tell application "Music" to get player state as string"#)?.stringValue else { return false }

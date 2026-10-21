@@ -1,0 +1,71 @@
+// The transition meter (0.4.0, from Basso's meter of 21 Oct 2026): for every change of track, one line in Arco's log
+// that says how it went — "seamless", or what went wrong. Arco watches its own log for twenty seconds after the change
+// (the signs below are its own lines), then writes the verdict. A bug report with the log then shows at a glance which
+// changes were heard, and why.
+//
+//   transition: Folie À Deux — natural, 96 → 96 kHz — seamless
+//   transition: Moon River — skip, 96 → 44.1 kHz — the clock corrected at the track's start
+import Foundation
+
+@MainActor
+final class TransitionMeter {
+    enum Kind: String { case start, natural, skip }
+
+    private struct Open { let title: String; let kind: Kind; let from: Double?; let at: Date; var signs: [String] = [] }
+    private var open: Open?
+    private var closing: Task<Void, Never>?
+    /// The rate now, for the verdict line.
+    var rate: (() -> Double?)?
+
+    /// What Arco's own log says when something is heard (a sign may be expected for a kind: a new run at a skip is not one).
+    private static let signs: [(String, String)] = [
+        ("once more, a new run", "Roon had an error — a new run"),
+        ("failed:", "Arco failed"),
+        ("correcting, from the track's start", "the clock corrected at the track's start"),
+        ("didn't play again", "the Music app stalled after a change of clock"),
+        ("capture: no input for", "no sound from the Music app"),
+        ("the end of the run not found again", "a resume didn't splice"),
+        ("resume: Roon is", "Roon far behind on resuming"),
+        ("begins the next run", "a new run at the change (another rate)"),
+    ]
+
+    init() {
+        Log.observer = { [weak self] line in
+            Task { @MainActor in self?.heard(line) }
+        }
+    }
+
+    /// A change of track: the previous one's verdict now, and a new window.
+    func begin(_ title: String, kind: Kind) {
+        close()
+        open = Open(title: title, kind: kind, from: rate?(), at: Date())
+        closing?.cancel()
+        closing = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(20))
+            guard !Task.isCancelled else { return }
+            self?.close()
+        }
+    }
+
+    /// Arco stopped sending: the open window closes as it is.
+    func end() { close() }
+
+    private func heard(_ line: String) {
+        guard var o = open, !line.contains("transition:") else { return }
+        for (sign, what) in Self.signs where line.contains(sign) {
+            // A new run belongs to a start or a skip; at a natural change it is the silence of another rate (accepted, but
+            // said). A correction at a skip or a start comes before Roon plays: not heard.
+            if o.kind != .natural, sign == "begins the next run" || sign == "correcting, from the track's start" { continue }
+            if !o.signs.contains(what) { o.signs.append(what) }
+        }
+        open = o
+    }
+
+    private func close() {
+        guard let o = open else { return }
+        open = nil
+        let khz = { (r: Double?) in r.map { MenuBarLabel.short($0) } ?? "?" }
+        let verdict = o.signs.isEmpty ? "seamless" : o.signs.joined(separator: "; ")
+        Log.note("transition: \(o.title) — \(o.kind.rawValue), \(khz(o.from)) → \(khz(rate?())) kHz — \(verdict)")
+    }
+}
