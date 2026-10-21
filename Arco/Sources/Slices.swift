@@ -175,12 +175,20 @@ final class SliceStore: @unchecked Sendable {
             if let c = current, c.declared, Self.title(c.info) == title { return nil }
             if let q = queued, Self.title(q.track.info) == title {
                 guard let c = current, !c.closed, Double(c.frames - c.written) / c.rate > 3 else { return nil }
-                Log.note("runs: \(title) began \(c.ms(c.frames - c.written)) ms before slice \(c.number) was full — a new slice")
+                // The Music app went on early (20:31, Skala → Pianissimo: after Skala's change of clock the Music app took 5 s
+                // to sound again, and the slice ran 4 s behind). The slice ends at what it has — its readers get an early end,
+                // the renderer goes on to its next by itself — and the writing goes on in the declared one: the SetNext and
+                // its track information stay.
+                Log.note("runs: \(title) began \(c.ms(c.frames - c.written)) ms before slice \(c.number) was full — it ends there, on in \(q.slice.number)")
+                endEarly(c)
+                current = nil
+                moveToQueued()
+                return nil
             }
             if let c = current, !c.closed {
                 // The Music app went on before the slice was full (its length was off, or the track wasn't declared): the
                 // slice ends here — the renderer plays it to this point — and the new one follows it.
-                c.closed = true
+                endEarly(c)
                 current = nil
                 if let q = queued { remove(q.slice); queued = nil }
                 pendingRun = (t, (c.number, c.ms(c.written)))
@@ -241,6 +249,13 @@ final class SliceStore: @unchecked Sendable {
     var queuedSlice: Slice? { lock.lock(); defer { lock.unlock() }; return queued?.slice }
     /// A slice's track information (per track: what the renderer shows when it plays it).
     func info(of number: Int) -> [String: Any]? { lock.lock(); defer { lock.unlock() }; return slices[number]?.info }
+
+    /// Under the lock: a slice ends at what it has — its readers get the rest of it and then the end of the stream.
+    private func endEarly(_ c: Slice) {
+        c.closed = true
+        c.frames = max(1, c.written)
+        for r in c.readers { pump(c, r) }
+    }
 
     /// Under the lock: the writing goes on in the declared slice — with what waited in the overflow, at its rate.
     private func moveToQueued() {
