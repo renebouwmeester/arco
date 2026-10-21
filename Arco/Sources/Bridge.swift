@@ -638,7 +638,18 @@ final class Bridge: ObservableObject {
                         Log.note(String(format: "resume: the Music app 1.2 s back (at %.1f s) — a splice", at))
                     }
                 }
-                if phase == .paused {
+                if phase == .paused, isUPnP {
+                    // A UPnP renderer plays on from its own small buffer at once, and the splice writes nothing new for
+                    // 2.5 s: after a pause of 15 s the Ellipse ran dry (21 Oct 2026, 19:23:36). It plays again once the
+                    // splice is done, with 1.5 s more — the Music app already plays meanwhile.
+                    phase = .playing
+                    Task { @MainActor [weak self] in
+                        for _ in 0..<60 where self?.store?.isSplicing == true { try? await Task.sleep(for: .milliseconds(100)) }
+                        try? await Task.sleep(for: .milliseconds(1500))
+                        guard let self, self.phase == .playing, self.source.state == .playing else { return }
+                        self.roonControl("play")
+                    }
+                } else if phase == .paused {
                     // Roon goes on at once (after a short pause it doesn't even re-open RAAT). Holding Music back until Roon
                     // played (c579c99) got in the way — during a change of clock above all.
                     roonControl("play")

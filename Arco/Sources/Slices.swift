@@ -201,6 +201,8 @@ final class SliceStore: @unchecked Sendable {
     /// The splice after a pause (see Splice): the end of the run to find again, the new sound so far, until when to collect,
     /// and how far the bridge sent the Music app back (the fallback when the end isn't found).
     private var splice: (tail: [Int32], sound: Data, until: Date, back: Double)?
+    /// The splice is still collecting the new sound (nothing new is written until it is done).
+    var isSplicing: Bool { lock.lock(); defer { lock.unlock() }; return splice != nil }
     /// Where the run stood when the sound came back after a pause (see prepareSplice).
     private var resumedAt: Int?
     /// The bridge resumes with a splice: take the end of the run now (it is the trimmed end of the pause).
