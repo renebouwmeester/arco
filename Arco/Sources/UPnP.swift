@@ -129,13 +129,18 @@ struct UPnPRenderer: Identifiable, Equatable, Sendable {
 @MainActor
 final class UPnPFinder: ObservableObject {
     @Published private(set) var renderers: [UPnPRenderer] = []
+    private var seen: [String: (renderer: UPnPRenderer, at: Date)] = [:]
     static var enabled: Bool { UserDefaults.standard.bool(forKey: "UPnP") }
 
     init() {
         guard Self.enabled else { return }
         Task { @MainActor [weak self] in
             while let self {
-                let found = await UPnPRenderer.find()
+                // A renderer stays ten minutes after it last answered: the Mu-so doesn't answer every search (Basso, 20 Sept;
+                // here 21 Oct 20:22 — it vanished from the menu after one round).
+                for r in await UPnPRenderer.find() { self.seen[r.id] = (r, Date()) }
+                self.seen = self.seen.filter { Date().timeIntervalSince($0.value.at) < 600 }
+                let found = self.seen.values.map(\.renderer).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
                 if found != self.renderers {
                     Log.note("upnp: \(found.count) renderer\(found.count == 1 ? "" : "s") — \(found.map(\.name).joined(separator: ", "))")
                     self.renderers = found
