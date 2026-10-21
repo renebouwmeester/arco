@@ -106,6 +106,8 @@ final class FormatLog {
             try? await Task.sleep(for: .milliseconds(100))
         }
     }
+    /// The Music app's own word that it pauses, with its reason — at once, before its notification (Bridge).
+    var onPause: ((String) -> Void)?
     /// Each lossless line (outside a quiet moment): for a late correction (Bridge).
     var onLossless: ((Date, Int) -> Void)?
     /// Moments after which lines are about the track that already plays (a resume, Arco's own change of clock).
@@ -116,7 +118,7 @@ final class FormatLog {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/log")
         p.arguments = ["stream", "--style", "ndjson", "--predicate",
-                       #"process == "Music" AND (eventMessage CONTAINS "Creating AudioQueue with format" OR eventMessage CONTAINS "ITMPAVItemCount INIT" OR eventMessage CONTAINS "isInContiguousAlbum" OR eventMessage CONTAINS "loadedTimeRanges" OR eventMessage CONTAINS "setTargetContentItemID" OR eventMessage CONTAINS "Asset Log Mapping" OR eventMessage CONTAINS "fmtDescChangeNote" OR eventMessage CONTAINS "mediaFormatinfo" OR eventMessage CONTAINS "-bit source")"#]
+                       #"process == "Music" AND (eventMessage CONTAINS "Creating AudioQueue with format" OR eventMessage CONTAINS "ITMPAVItemCount INIT" OR eventMessage CONTAINS "isInContiguousAlbum" OR eventMessage CONTAINS "loadedTimeRanges" OR eventMessage CONTAINS "setTargetContentItemID" OR eventMessage CONTAINS "Asset Log Mapping" OR eventMessage CONTAINS "fmtDescChangeNote" OR eventMessage CONTAINS "mediaFormatinfo" OR eventMessage CONTAINS "-bit source" OR eventMessage CONTAINS "cmd> stop> pause")"#]
         let out = Pipe(), err = Pipe()
         p.standardOutput = out
         p.standardError = err
@@ -262,6 +264,13 @@ final class FormatLog {
                   let message = json["eventMessage"] as? String else { continue }
             if nextLine(message) { continue }
             if labelLine(message) { continue }
+            // The Music app pauses (21 Oct 2026, 23:04:59: "mpc> cmd> stop> pause (reason='Lease/SlotLimitReached')" — another
+            // device took the account's stream). Its notification of that pause came 6 s later; this line comes at once.
+            if message.contains("cmd> stop> pause") {
+                let reason = message.range(of: #"reason='[^']*'"#, options: .regularExpression).map { String(message[$0].dropFirst(8).dropLast()) } ?? "?"
+                onPause?(reason)
+                continue
+            }
             guard let r = message.range(of: #"sampleRate:(\d+)"#, options: .regularExpression),
                   let rate = Int(message[r].filter(\.isNumber)) else { continue }
             var format = "?"

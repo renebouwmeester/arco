@@ -126,6 +126,13 @@ final class Bridge: ObservableObject {
         formats.onLossless = { [weak self] at, rate in self?.lateLossless(at: at, rate: rate) }
         formats.onLabel = { [weak self] label in self?.labelArrived(label) }
         formats.onNext = { [weak self] _ in self?.declareNext() }
+        // The Music app's pause at once, from its log: the notification can come seconds late (Apple's slot limit, 23:04:59 →
+        // 23:05:05), and meanwhile the slice filled with silence — 6 s too early full, the next track in the wrong slice.
+        formats.onPause = { [weak self] reason in
+            guard let self, self.isOn, self.source === self.music, self.phase == .playing, Date() > self.ownUntil else { return }
+            Log.note("music: pauses (its own log: \(reason)) — no more writing")
+            self.store?.pauseWriting()
+        }
         meter.rate = { [weak self] in self?.rate }
         // The Music app's volume, every fifteen seconds while Arco sends it (0.4.0).
         Task { @MainActor [weak self] in
