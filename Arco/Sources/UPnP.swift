@@ -22,6 +22,8 @@ struct UPnPRenderer: Identifiable, Equatable, Sendable {
     let host: String
     let avTransport: URL
     let avTransportType: String
+    /// Where its description is (for the log line of what it can, see capabilities).
+    let location: URL
 
     /// Which renderers there are: an SSDP search (2.5 s), then each one's description.
     static func find() async -> [UPnPRenderer] {
@@ -87,9 +89,46 @@ struct UPnPRenderer: Identifiable, Equatable, Sendable {
         for block in xml.components(separatedBy: "<service>").dropFirst() {
             guard let type = tag("serviceType", in: block), type.contains(":service:AVTransport:"),
                   let control = tag("controlURL", in: block), let url = URL(string: control, relativeTo: base)?.absoluteURL else { continue }
-            return UPnPRenderer(id: udn, name: name.replacingOccurrences(of: "&amp;", with: "&"), host: host, avTransport: url, avTransportType: type)
+            return UPnPRenderer(id: udn, name: name.replacingOccurrences(of: "&amp;", with: "&"), host: host, avTransport: url,
+                                avTransportType: type, location: location)
         }
         return nil
+    }
+
+    /// What it can, in one line for the log (21 Oct 2026 — for testers far away, a Linn Klimax DSM first): its maker, whether
+    /// its AVTransport offers SetNext, whether it takes WAV and FLAC, and whether it speaks OpenHome too.
+    func capabilities() async -> String {
+        func get(_ url: URL) async -> String? {
+            var r = URLRequest(url: url); r.timeoutInterval = 3
+            return (try? await URLSession.shared.data(for: r)).map { String(decoding: $0.0, as: UTF8.self) }
+        }
+        guard let xml = await get(location) else { return "no description" }
+        let maker = Self.value("manufacturer", in: xml) ?? "?", model = Self.value("modelName", in: xml) ?? "?"
+        let base = Self.value("URLBase", in: xml).flatMap(URL.init(string:)) ?? location
+        var setNext = "?", sink = "", openHome = xml.contains("av-openhome-org") ? "yes" : "no"
+        for block in xml.components(separatedBy: "<service>").dropFirst() {
+            guard let type = Self.value("serviceType", in: block) else { continue }
+            if type.contains(":service:AVTransport:"), let scpd = Self.value("SCPDURL", in: block),
+               let url = URL(string: scpd, relativeTo: base), let text = await get(url.absoluteURL) {
+                setNext = text.contains("SetNextAVTransportURI") ? "yes" : "no"
+            }
+            if type.contains(":service:ConnectionManager:"), let control = Self.value("controlURL", in: block),
+               let url = URL(string: control, relativeTo: base) {
+                let body = "<?xml version=\"1.0\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" "
+                    + "s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body><u:GetProtocolInfo xmlns:u=\"\(type)\"/></s:Body></s:Envelope>"
+                var r = URLRequest(url: url.absoluteURL); r.timeoutInterval = 3; r.httpMethod = "POST"
+                r.setValue("text/xml; charset=\"utf-8\"", forHTTPHeaderField: "Content-Type")
+                r.setValue("\"\(type)#GetProtocolInfo\"", forHTTPHeaderField: "SOAPAction")
+                r.httpBody = Data(body.utf8)
+                if let (d, _) = try? await URLSession.shared.data(for: r) {
+                    let info = (Self.value("Sink", in: String(decoding: d, as: UTF8.self)) ?? "").lowercased()
+                    sink = ", WAV \(info.contains("audio/wav") || info.contains("audio/x-wav") || info.contains("audio/wave") ? "yes" : "no")"
+                        + ", FLAC \(info.contains("flac") ? "yes" : "no")"
+                }
+            }
+            if type.contains("av-openhome-org") { openHome = "yes" }
+        }
+        return "\(maker) \(model) — SetNext \(setNext)\(sink), OpenHome \(openHome)"
     }
 
     /// An AVTransport action; the answer's body, or nil (logged).
@@ -130,6 +169,8 @@ struct UPnPRenderer: Identifiable, Equatable, Sendable {
 final class UPnPFinder: ObservableObject {
     @Published private(set) var renderers: [UPnPRenderer] = []
     private var seen: [String: (renderer: UPnPRenderer, at: Date)] = [:]
+    /// Renderers whose capabilities are in the log already (once per start of Arco).
+    private var described = Set<String>()
     static var enabled: Bool { UserDefaults.standard.bool(forKey: "UPnP") }
 
     init() {
@@ -138,7 +179,13 @@ final class UPnPFinder: ObservableObject {
             while let self {
                 // A renderer stays ten minutes after it last answered: the Mu-so doesn't answer every search (Basso, 20 Sept;
                 // here 21 Oct 20:22 — it vanished from the menu after one round).
-                for r in await UPnPRenderer.find() { self.seen[r.id] = (r, Date()) }
+                for r in await UPnPRenderer.find() {
+                    if self.seen[r.id] == nil, !self.described.contains(r.id) {
+                        self.described.insert(r.id)
+                        Task { Log.note("upnp: \(r.name) — \(await r.capabilities())") }
+                    }
+                    self.seen[r.id] = (r, Date())
+                }
                 self.seen = self.seen.filter { Date().timeIntervalSince($0.value.at) < 600 }
                 let found = self.seen.values.map(\.renderer).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
                 if found != self.renderers {
