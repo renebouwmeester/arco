@@ -69,6 +69,8 @@ final class Bridge: ObservableObject {
     /// Experimental: `defaults write nl.renebouwmeester.arco ThisMac -bool true`.
     var isLocal: Bool { if case .local = target { return true }; return false }
     static var localEnabled: Bool { UserDefaults.standard.bool(forKey: "ThisMac") }
+    /// The bit depth of the track that plays, from the Music app's label (nil: the label didn't say).
+    var bits: Int? { source === music ? music.track.flatMap { formats.label(for: $0.title)?.bits } : nil }
     /// What kind of target Arco plays to, for the menu's line: "Roon", "Local" or "UPnP".
     var targetKind: String? {
         switch target {

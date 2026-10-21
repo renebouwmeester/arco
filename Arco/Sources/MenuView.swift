@@ -182,7 +182,9 @@ extension MenuView {
         guard let rate = bridge.rate, rate > 0 else { return "" }
         let khz = rate / 1000
         let fixed = bridge.zoneName.map(bridge.isFixed) == true
-        return " · " + (khz.rounded() == khz ? String(format: "%.0f", khz) : String(format: "%.1f", khz)) + " kHz" + (fixed ? ", fixed" : "")
+        // With the bit depth when the Music app's label gave it (René, 21 Oct 2026: "aardigheidje") — the menu bar stays compact.
+        let bits = bridge.bits.map { "\($0)-bit/" } ?? ""
+        return " · " + bits + (khz.rounded() == khz ? String(format: "%.0f", khz) : String(format: "%.1f", khz)) + " kHz" + (fixed ? ", fixed" : "")
     }
 
     /// " (Roon)", " (Local)", " (UPnP)" — where the music goes (René, 21 Oct 2026).
