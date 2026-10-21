@@ -220,8 +220,8 @@ private struct RateRow: View {
 
     var body: some View {
         Picker(selection: Binding(get: { bridge.isFixed(zone.name) }, set: { bridge.setFixed($0, for: zone.name) })) {
-            Text("Follow each track (bit-perfect)").tag(false)
-            Text("Fixed 96 kHz (no rate switches)").tag(true)
+            Text("Follow Each Track (Bit-Perfect)").tag(false)
+            Text("Fixed 96 kHz (No Rate Switches)").tag(true)
         } label: {
             Image(systemName: "waveform").foregroundStyle(.secondary).font(.caption)
         }
@@ -231,8 +231,8 @@ private struct RateRow: View {
         .fixedSize()
         // 0.4.0: one stream for gapless, or one per track for a display that shows each song's length.
         Picker(selection: Binding(get: { bridge.isPerTrack(zone.name) }, set: { bridge.setPerTrack($0, for: zone.name) })) {
-            Text("Gapless (one stream)").tag(false)
-            Text("One stream per track (pauses)").tag(true)
+            Text("Gapless (One Stream)").tag(false)
+            Text("Stream per Track (Not Gapless)").tag(true)
         } label: {
             Image(systemName: "rectangle.split.3x1").foregroundStyle(.secondary).font(.caption)
         }
