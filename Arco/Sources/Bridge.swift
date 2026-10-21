@@ -318,6 +318,7 @@ final class Bridge: ObservableObject {
         guard let track = source.track else { return }
         let left = max(1000, track.durationMs - Int(source.position() * 1000))
         store.startTrack(.init(info: makeInfo(track), durationMs: left), newRun: true)
+        if !lastInfoHadCover { lateCover(track) }   // also the first track of a session (16:08:13, after a restart)
         followClock(track, kind: .start)
         // No sound within five seconds: say so instead of waiting for nothing.
         try? await Task.sleep(for: .seconds(5))
