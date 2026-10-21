@@ -882,6 +882,14 @@ final class Bridge: ObservableObject {
         // Before the pause, which can take the Music app two seconds (17:08:39): from now on Roon gets nothing past the
         // track's start.
         if back { store?.restartTrackAtNewRate() }
+        // This Mac, a real DAC (21 Oct 2026, René: "dat gaat niet altijd vlekkeloos" — a row of skips on the MacBook speakers):
+        // the hardware takes 0.3–0.5 s to change rate, and the Music app then sets up its queue again and pauses itself once
+        // more, in the first notes (Caring 21:36:29, Milam Bardo 21:36:50). Basso's way: change muted — the Music app plays
+        // its first moment at volume 0 and stumbles in silence, then back to the start at its own volume.
+        if isLocal, playing, back, target != now {
+            await changeClockMuted(to: target, of: arco, for: track)
+            return
+        }
         if playing { music.pause() }
         if target != now { AudioDevices.setSampleRate(target, of: arco) }
         try? await Task.sleep(for: .milliseconds(250))
@@ -891,6 +899,34 @@ final class Bridge: ObservableObject {
         // Does it play? (8 Oct 16:42, Wildwood Flower after autoplay: the Music app carried out the pause a second late and
         // swallowed the play right behind it — it stood paused at 0.36 s and Roon got a run without music.) Basso's way:
         // look, and press play again — up to three times.
+        for attempt in 1...3 {
+            try? await Task.sleep(for: .milliseconds(800))
+            guard isOn, source === music, music.track?.id == track.id else { return }
+            if music.isPlayingNow() { return }
+            Log.note("clock: the Music app didn't play again — play (\(attempt))")
+            music.play()
+        }
+    }
+
+    /// This Mac: the change of clock with the Music app muted (see setClock).
+    private func changeClockMuted(to target: Double, of dac: AudioDeviceID, for track: SourceTrack) async {
+        let volume = music.volume() ?? 100
+        music.setVolume(0)
+        defer { music.setVolume(volume) }   // whatever happens, its own volume back (100 is bit-perfect)
+        music.pause()
+        AudioDevices.setSampleRate(target, of: dac)
+        // The hardware first (up to 1.5 s), then the Music app's own stumble, muted: play, and let it settle 1.2 s.
+        for _ in 0..<75 where AudioDevices.sampleRate(of: dac) != target { try? await Task.sleep(for: .milliseconds(20)) }
+        music.seekToStart()
+        music.play()
+        try? await Task.sleep(for: .milliseconds(1200))
+        guard isOn, source === music, music.track?.id == track.id else { return }
+        music.pause()
+        music.seekToStart()
+        music.setVolume(volume)
+        try? await Task.sleep(for: .milliseconds(80))
+        music.play()
+        Log.note("clock: \(track.title) — changed muted, back to the start at volume \(volume)")
         for attempt in 1...3 {
             try? await Task.sleep(for: .milliseconds(800))
             guard isOn, source === music, music.track?.id == track.id else { return }
