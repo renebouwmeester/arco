@@ -43,7 +43,9 @@ final class SetupCheck: ObservableObject {
     }
 
     /// Everything on the Mac's side is in place (Roon's Enable is the connection's own state).
-    var macReady: Bool { driver && microphone == .granted && automation.allSatisfy { $0.access == .granted } }
+    var macReady: Bool { driver && microphone == .granted && musicReady }
+    /// Control of Music (and Spotify) — all This Mac needs: it captures nothing, so no driver and no microphone.
+    var musicReady: Bool { automation.allSatisfy { $0.access == .granted } }
 
     func allowMicrophone() {
         Task {
@@ -88,21 +90,31 @@ final class SetupCheck: ObservableObject {
 struct SetupList: View {
     @ObservedObject var setup: SetupCheck
     let connection: RoonConnection.State
+    /// Another target is chosen (UPnP, This Mac): Roon is optional, not an open item.
+    var roonOptional = false
+    /// This Mac is chosen: no driver, no microphone needed.
+    var localOnly = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Get started").font(.caption).foregroundStyle(.secondary)
-            item(done: setup.driver, "Audio driver",
-                 setup.driver ? "Installed" : "Missing — run the Arco installer again")
-            item(done: setup.microphone == .granted, "Microphone access",
-                 "Arco reads its own audio output, nothing else",
-                 button: Self.title(setup.microphone)) { setup.allowMicrophone() }
+            if !localOnly {
+                item(done: setup.driver, "Audio driver",
+                     setup.driver ? "Installed" : "Missing — run the Arco installer again")
+                item(done: setup.microphone == .granted, "Microphone access",
+                     "Arco reads its own audio output, nothing else",
+                     button: Self.title(setup.microphone)) { setup.allowMicrophone() }
+            }
             ForEach(setup.automation) { app in
                 item(done: app.access == .granted, "Control \(app.name)",
                      "To follow what plays and pass on Roon's buttons",
                      button: Self.title(app.access)) { setup.allowAutomation(app.bundleID, access: app.access) }
             }
-            item(done: isPaired, "Enabled in Roon", roonLine)
+            if roonOptional {
+                item(done: true, "Roon (Optional)", isPaired ? roonLine : "Only needed for Roon zones")
+            } else {
+                item(done: isPaired, "Enabled in Roon", roonLine)
+            }
         }
     }
 

@@ -17,6 +17,9 @@ struct MenuView: View {
     }
 
     private var isPaired: Bool { if case .paired = model.connectionState { return true }; return false }
+    /// A Roon zone is (or would be) the target: nothing else chosen.
+    private var roonNeeded: Bool { model.selectedRenderer == nil && model.selectedLocal == nil }
+    private var macOK: Bool { model.selectedLocal != nil ? setup.musicReady : setup.macReady }
     /// Enabled in Roon before, and connecting again — after a start or an update (0.3.1, René: "Het rijtje goed te keuren
     /// is nu weg – lijkt zichzelf te hebben hersteld?"): the menu says it connects instead of showing the checklist, whose
     /// "Enabled in Roon" stood open for those seconds. Only if Roon really waits for Enable does the checklist return.
@@ -35,14 +38,16 @@ struct MenuView: View {
             }
             Divider()
             // The checklist while something is missing — also while Roon isn't connected (its last item).
-            if !(setup.macReady && (isPaired || reconnecting)) {
-                SetupList(setup: setup, connection: model.connectionState)
-            } else if reconnecting {
+            // Roon is only needed for a Roon zone (21 Oct 2026, René): with UPnP or This Mac chosen it's optional, and This
+            // Mac needs no driver and no microphone either.
+            if !(macOK && (!roonNeeded || isPaired || reconnecting)) {
+                SetupList(setup: setup, connection: model.connectionState, roonOptional: !roonNeeded, localOnly: model.selectedLocal != nil)
+            } else if reconnecting, roonNeeded {
                 Text(statusLine).font(.callout).foregroundStyle(.secondary)
             }
             // The switch and the targets: with Roon connected — or without it, for This Mac and UPnP (experimental).
             if isPaired || Bridge.localEnabled || UPnPFinder.enabled {
-                if !setup.macReady || !isPaired { Divider() }
+                if !macOK || !isPaired { Divider() }
                 content
             }
             Divider()
