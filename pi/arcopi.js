@@ -184,7 +184,21 @@ async function zetVolgende(r) {
   const url = runURL(r);
   const ok = await avt(d, "SetNextAVTransportURI", `<NextURI>${esc(url)}</NextURI><NextURIMetaData>${esc(didl(url))}</NextURIMetaData>`) !== null;
   log(`run ${r.nr} (${r.rate} Hz) als volgende → ${d.naam}${ok ? "" : " — geweigerd, dan opnieuw starten"}`);
-  if (ok) { speelt = r; speeltTot = Infinity; } else { r.gespeeld = false; }
+  if (ok) { speelt = r; speeltTot = Infinity; bewaakVolgende(r, d); } else { r.gespeeld = false; }
+}
+// Niet elke renderer gaat door naar de volgende als een run halverwege dichtgaat (de kop beloofde 3 uur): de Ellipse stopte
+// (22 okt 2026, 13:03, 44,1 → 96). Dus kijken: speelt hij de volgende, dan goed; staat hij stil, dan start Arco Pi hem zelf.
+async function bewaakVolgende(r, d) {
+  const tot = Date.now() + (voorsprong() + 20) * 1000;
+  while (Date.now() < tot && speelt === r && runs.has(r.nr)) {
+    await new Promise((k) => setTimeout(k, 1000));
+    const stand = /<CurrentTransportState>(.*?)</.exec((await avt(d, "GetTransportInfo")) || "")?.[1];
+    if (stand === "PLAYING" && ((await avt(d, "GetPositionInfo")) || "").includes(`-${r.nr}.wav`)) return;
+    if ((stand === "STOPPED" || stand === "NO_MEDIA_PRESENT") && speelt === r) {
+      log(`run ${r.nr}: ${d.naam} stopte aan het einde van de vorige — zelf gestart`);
+      return speel(r);
+    }
+  }
 }
 
 // ---- de webpagina ---------------------------------------------------------------------------------------------------
