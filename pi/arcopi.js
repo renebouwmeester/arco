@@ -217,7 +217,9 @@ http.createServer((req, res) => {
       fs.writeFileSync(KEUZE, JSON.stringify(doel));
       log(`doel: ${doel ? doel.naam : "nergens"}`);
       if (oud && oud.id !== doel?.id) avt(oud, "Stop");
-      if (run && run.gespeeld) speel(run);   // speelt er al iets: meteen naar het nieuwe doel
+      // Speelt er al iets: een nieuwe run vanaf wat er nu binnenkomt (22 okt 2026, 10:01:42: de run vanaf zijn begin naar
+      // het nieuwe doel liet de Ellipse een minuut achter de iPhone lopen) — met de voorsprong van het nieuwe doel.
+      if (run && opnameRate) { speelt = null; nieuweRun(opnameRate); }
       res.writeHead(303, { Location: "/" }); res.end();
     });
     return;
