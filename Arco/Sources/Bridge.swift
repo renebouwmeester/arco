@@ -68,7 +68,7 @@ final class Bridge: ObservableObject {
     /// track — from the label, at the boundary, never in the middle of a track. No capture, no Roon, no Arco driver.
     /// Experimental: `defaults write nl.renebouwmeester.arco ThisMac -bool true`.
     var isLocal: Bool { if case .local = target { return true }; return false }
-    static var localEnabled: Bool { UserDefaults.standard.bool(forKey: "ThisMac") }
+    static var localEnabled: Bool { UserDefaults.standard.object(forKey: "ThisMac") as? Bool ?? true }   // on since 0.5.0b1 (the beta)
     /// The bit depth of the track that plays, from the Music app's label (nil: the label didn't say).
     var bits: Int? { source === music ? music.track.flatMap { formats.label(for: $0.title)?.bits } : nil }
     /// What kind of target Arco plays to, for the menu's line: "Roon", "Local" or "UPnP".

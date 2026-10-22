@@ -12,4 +12,7 @@ xcrun stapler validate "$PKG" > /dev/null || { echo "$PKG is not notarized"; exi
 grep -q "Arco-$VERSION.pkg" "$CAST" || { echo "$CAST is not for $VERSION"; exit 1; }
 NOTES=(--notes "Arco $VERSION")
 [ -f "Package/notes/$VERSION.md" ] && NOTES=(--notes-file "Package/notes/$VERSION.md")
-gh release create "v$VERSION" "$PKG" "$CAST" --repo renebouwmeester/arco --title "Arco $VERSION" "${NOTES[@]}"
+# A beta (0.5.0b1) is a pre-release: releases/latest — what Sparkle reads — keeps pointing at the last real release, so
+# only testers who download it get it.
+PRE=(); [[ "$VERSION" == *b* ]] && PRE=(--prerelease)
+gh release create "v$VERSION" "$PKG" "$CAST" --repo renebouwmeester/arco --title "Arco $VERSION" "${NOTES[@]}" "${PRE[@]}"

@@ -191,7 +191,7 @@ final class UPnPFinder: ObservableObject {
     private var seen: [String: (renderer: UPnPRenderer, at: Date)] = [:]
     /// Renderers whose capabilities are in the log already (once per start of Arco).
     private var described = Set<String>()
-    static var enabled: Bool { UserDefaults.standard.bool(forKey: "UPnP") }
+    static var enabled: Bool { UserDefaults.standard.object(forKey: "UPnP") as? Bool ?? true }   // on since 0.5.0b1 (the beta)
 
     init() {
         guard Self.enabled else { return }
