@@ -257,10 +257,19 @@ final class UPnPOutput: Output {
         guard await renderer.avt("SetAVTransportURI", "<CurrentURI>\(UPnPRenderer.escape(url))</CurrentURI><CurrentURIMetaData>\(UPnPRenderer.escape(meta))</CurrentURIMetaData>") != nil else { return "MediaError" }
         // Play, again every quarter second for up to three: a renderer still between two streams refuses it at first
         // (the Ellipse, 19:26:09: "Transition not available").
+        // A renderer that is still loading (TRANSITIONING) gets up to 30 s, once a second: HQPlayer answers 702 to Play
+        // while it fills its buffer (22 Oct 2026, 12:20), and giving up after 3 s sent a new URI — and its buffering began over.
         var played = false
-        for _ in 0..<12 {
+        let patience = Date().addingTimeInterval(30)
+        for attempt in 0... {
             if await renderer.avt("Play", "<Speed>1</Speed>") != nil { played = true; break }
-            try? await Task.sleep(for: .milliseconds(250))
+            if attempt >= 11 {
+                let state = UPnPRenderer.value("CurrentTransportState", in: await renderer.avt("GetTransportInfo"))
+                guard state == "TRANSITIONING", Date() < patience else { break }
+                try? await Task.sleep(for: .seconds(1))
+            } else {
+                try? await Task.sleep(for: .milliseconds(250))
+            }
         }
         guard played else { return "MediaError" }
         self.track = track
