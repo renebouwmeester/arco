@@ -45,6 +45,11 @@ struct MenuView: View {
             } else if reconnecting, roonNeeded {
                 Text(statusLine).font(.callout).foregroundStyle(.secondary)
             }
+            // Still no Roon after 30 s: what to check (only when a Roon zone is the target).
+            if roonNeeded, model.searchTooLong {
+                Text("Can't find Roon — is the Core on this network? Also check System Settings › Privacy & Security › Local Network")
+                    .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
             // The switch and the targets: with Roon connected — or without it, for This Mac and UPnP (experimental).
             if isPaired || Bridge.localEnabled || UPnPFinder.enabled {
                 if !macOK || !isPaired { Divider() }

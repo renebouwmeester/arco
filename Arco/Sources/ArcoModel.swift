@@ -94,8 +94,32 @@ final class ArcoModel: ObservableObject {
     func setVolume(_ zone: RoonZone, to value: Double) { tracker.setVolume(zone, to: value) }
     func stepVolume(_ zone: RoonZone, up: Bool) { tracker.stepVolume(zone, up: up) }
 
+    /// Since when Arco looks for a Roon Core without finding one (22 Oct 2026: a tester saw "Looking for Roon…" and nothing
+    /// in the log said why): one line in the log after 30 s, and a hint in the menu.
+    @Published private(set) var searchingSince: Date?
+    private var searchNoted = false
+    /// 30 s without a Core: the menu says what to check.
+    @Published private(set) var searchTooLong = false
+
     private func connectionChanged(_ state: RoonConnection.State) {
         connectionState = state
+        if case .searching = state {
+            if searchingSince == nil {
+                searchingSince = Date(); searchNoted = false
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .seconds(30))
+                    guard let self, let since = self.searchingSince, Date().timeIntervalSince(since) >= 29, !self.searchNoted else { return }
+                    self.searchNoted = true
+                    self.searchTooLong = true
+                    Log.note("roon: no Roon Core answered for 30 s — not on this network (another subnet, a VPN, a guest network), or Arco may not use the local network (System Settings › Privacy & Security › Local Network)")
+                }
+            }
+        } else {
+            if let since = searchingSince, searchNoted { Log.note("roon: found after \(Int(Date().timeIntervalSince(since))) s") }
+            searchingSince = nil
+            searchTooLong = false
+        }
+        if case .paired(let core) = state { Log.note("roon: connected to \(core.name) (\(core.version))") }
         if case .paired = state {
             tracker.start(on: connection)
             connection.setStatus(selectedZone.map { "Ready — plays to \($0.name)" } ?? "Ready — pick a zone in the menu")

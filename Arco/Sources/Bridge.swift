@@ -284,7 +284,10 @@ final class Bridge: ObservableObject {
         else if fixedNow { AudioDevices.setSampleRate(AudioDevices.bestRate(Self.fixedRate, of: arco), of: arco) }
         Log.note("device: Arco at \(Int(AudioDevices.sampleRate(of: arco) ?? 0)) Hz; source \(source.name)\(fixedNow ? " — fixed at 96 kHz for this zone" : "")")
         let s = SliceStore(directory: directory)
-        s.perTrack = isUPnPTarget(target)   // a slice per track for a UPnP renderer (see Slices.swift)
+        // A slice per track for a UPnP renderer (see Slices.swift) — unless it refused SetNext before: then the runs, one stream
+        // per rate that it simply plays on (22 Oct 2026: HQPlayer answers SetNext with a 400). OpenHome always per track.
+        if case .upnp(let r) = target { s.perTrack = r.openHome != nil || !Self.runsOnly.contains(r.id) } else { s.perTrack = false }
+        if case .upnp(let r) = target, !s.perTrack { Log.note("upnp: \(r.name) refused SetNext before — the runs, one stream per rate") }
         s.onSliceStarted = { [weak self] slice in self?.sliceStarted(slice) }
         store = s
         storeHolder.set(s)
@@ -1050,6 +1053,11 @@ final class Bridge: ObservableObject {
 
     /// The image address of the last track information (per track: the declared next one borrows it until it plays).
     private var lastImageURL: String?
+    /// Renderers that refused SetNext (by UDN, remembered): they get the runs.
+    static var runsOnly: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: "UPnPRunsOnly") ?? []) }
+        set { UserDefaults.standard.set(newValue.sorted(), forKey: "UPnPRunsOnly") }
+    }
     /// The slice the renderer was last given as its next.
     private var nextSent = 0
 
@@ -1128,6 +1136,12 @@ final class Bridge: ObservableObject {
         Task { @MainActor in
             let ok = await s.setNext(track: String(q.number), url: url, info: q.info)
             Log.note("next: slice \(q.number) (\(Self.lines(q.info)?.title ?? "?")) set as the renderer's next\(ok ? "" : " — refused")")
+            // Refused: this renderer gets the runs from its next start on (remembered); this session goes on slice by slice,
+            // each one played when the renderer stopped at the end of the one before (a short gap).
+            if !ok, case .upnp(let r) = self.target, r.openHome == nil, !Self.runsOnly.contains(r.id) {
+                Self.runsOnly.insert(r.id)
+                Log.note("upnp: \(r.name) refuses SetNext — from its next start on the runs (one stream per rate)")
+            }
         }
     }
 
