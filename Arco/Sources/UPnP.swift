@@ -212,6 +212,10 @@ final class UPnPOutput: Output {
     private var lastState = ""
     /// Out of music: between two streams, or stopped at the end of a slice nothing followed (per track).
     var isStarved: Bool { ["TRANSITIONING", "STOPPED", "NO_MEDIA_PRESENT"].contains(lastState) }
+    /// The renderer let go of the stream (22 Oct 2026: the KEF went to standby 5 s into a pause, then answered 404 and
+    /// "STOPPED" — and a Play the next morning had nothing to play): stopped, or no answer three times in a row.
+    var lostStream: Bool { failures >= 3 || ["STOPPED", "NO_MEDIA_PRESENT"].contains(lastState) }
+    private var failures = 0
     /// Which track each URL is (per track the renderer moves on to the next by itself; its TrackURI says where it is).
     private var tracks: [String: String] = [:]
 
@@ -277,7 +281,9 @@ final class UPnPOutput: Output {
         poller = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 guard let self, var track = self.track else { return }
-                let state = UPnPRenderer.value("CurrentTransportState", in: await self.renderer.avt("GetTransportInfo")) ?? ""
+                let info = await self.renderer.avt("GetTransportInfo")
+                self.failures = info == nil ? self.failures + 1 : 0
+                let state = UPnPRenderer.value("CurrentTransportState", in: info) ?? ""
                 guard !Task.isCancelled, self.track == track else { return }
                 if state == "PLAYING", let position = await self.renderer.avt("GetPositionInfo"), let rel = UPnPRenderer.value("RelTime", in: position) {
                     // Moved on to the next track by itself (SetNext, per track): from now on that one.

@@ -727,6 +727,14 @@ final class Bridge: ObservableObject {
                 }
             } else if state == .playing {
                 pendingPause?.cancel(); pendingPause = nil
+                // A UPnP renderer that let go of the stream while paused (standby, 22 Oct 2026): no Play — it has nothing to
+                // play — but a fresh slice from where the Music app is, as at a skip (it wakes the renderer too).
+                if phase == .paused, let out = session as? UPnPOutput, out.lostStream, let track, let store {
+                    let left = max(1000, track.durationMs - Int(s.position() * 1000))
+                    Log.note("resume: \(out.name) let go of the stream while paused — a fresh slice from where the Music app is")
+                    store.startTrack(.init(info: makeInfo(track), durationMs: left), newRun: true)
+                    phase = .playing
+                }
                 // Roon far behind the stream on resuming (12:52:48: 110 s — the Music app played on through a pause it
                 // never made, its AppleScript timed out): no use catching up; a new run from where Music is, as at a skip.
                 if phase == .paused, let status = store?.status, roonSlice == status.number,
