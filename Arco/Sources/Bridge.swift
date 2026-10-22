@@ -63,6 +63,8 @@ final class Bridge: ObservableObject {
     private var target: Target?
     /// The output plays to a UPnP renderer (experimental, see UPnP.swift).
     var isUPnP: Bool { if case .upnp = target { return true }; return false }
+    /// Who plays the runs, for the log: Roon, or a UPnP renderer.
+    private var peer: String { isUPnP ? "the renderer" : "Roon" }
     /// "This Mac" (21 Oct 2026, René: "kunnen we Arco ook naar een local device laten afspelen? Voordeel zou dan de
     /// autoclocker moeten zijn"): the Music app plays straight to a DAC of this Mac, and Arco only sets the DAC's clock per
     /// track — from the label, at the boundary, never in the middle of a track. No capture, no Roon, no Arco driver.
@@ -288,6 +290,7 @@ final class Bridge: ObservableObject {
         // per rate that it simply plays on (22 Oct 2026: HQPlayer answers SetNext with a 400). OpenHome always per track.
         if case .upnp(let r) = target { s.perTrack = r.openHome != nil || !Self.runsOnly.contains(r.id) } else { s.perTrack = false }
         if case .upnp(let r) = target, !s.perTrack { Log.note("upnp: \(r.name) refused SetNext before — the runs, one stream per rate") }
+        if case .upnp(let r) = target { s.maxRate = r.maxRate; s.peer = "the renderer" }
         s.onSliceStarted = { [weak self] slice in self?.sliceStarted(slice) }
         store = s
         storeHolder.set(s)
@@ -444,7 +447,7 @@ final class Bridge: ObservableObject {
                       self.roonPositionNow() < follows.atMs - 250, !(self.session?.isStarved ?? false) {
                     try? await Task.sleep(for: .milliseconds(50))
                 }
-                Log.note("run \(slice.number): Roon at \(self.roonPositionNow()) ms of run \(follows.number) (frozen at \(follows.atMs))")
+                Log.note("run \(slice.number): \(self.peer) at \(self.roonPositionNow()) ms of run \(follows.number) (frozen at \(follows.atMs))")
                 // And the new run's own supply: the seam in Roon is then as long as Music's own pause to change the clock.
                 await self.waitForSupply()
             } else {
@@ -459,7 +462,7 @@ final class Bridge: ObservableObject {
             }
             guard self.session === s else { return }
             // Replaced in the meantime (a skip right after): the newer run goes to Roon, not this one.
-            guard self.store?.isCurrent(slice) == true else { Log.note("run \(slice.number) superseded before it reached Roon"); return }
+            guard self.store?.isCurrent(slice) == true else { Log.note("run \(slice.number) superseded before it reached \(self.peer)"); return }
             // The run before it (frozen, or cut) goes now: its waiting downloader in Roon would hold the zone's bandwidth.
             self.store?.forget(before: slice.number)
             self.ownUntil = Date().addingTimeInterval(3)
@@ -489,6 +492,9 @@ final class Bridge: ObservableObject {
                 self.movedOn(to: slice.number)   // per track: and its next
             } else if self.phase == .starting {
                 self.fail(answer == "Timeout" ? "\(s.name) didn't start playing" : "\(s.name): \(answer)")
+            } else if self.isUPnP {
+                // Stopped at a new track and silent from then on (22 Oct 2026: the Sonos Era at 96 kHz) — said, not hidden.
+                self.fail("\(s.name) didn't play the next track")
             }
         }
     }
@@ -504,7 +510,7 @@ final class Bridge: ObservableObject {
         heartbeat = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, let status = self.store?.status else { return }
-                Log.note("run \(status.number): \(status.writtenMs) ms written; Roon in run \(self.roonSlice) at \(self.roonPositionMs) ms")
+                Log.note("run \(status.number): \(status.writtenMs) ms written; \(self.peer) in run \(self.roonSlice) at \(self.roonPositionMs) ms")
             }
         }
     }
@@ -536,7 +542,7 @@ final class Bridge: ObservableObject {
 
     private func roonEvent(_ event: AudioInputSession.Event) {
         let own = Date() < ownUntil
-        if case .time = event {} else { Log.note("roon: \(event)\(own ? " (ours)" : "")") }
+        if case .time = event {} else { Log.note("\(isUPnP ? "renderer" : "roon"): \(event)\(own ? " (ours)" : "")") }
         // Events of a slice Roon left behind (an end, an error after a skip) don't count.
         func current(_ track: String) -> Bool { Int(track) ?? 0 >= roonSlice }
         switch event {
@@ -719,7 +725,7 @@ final class Bridge: ObservableObject {
                     try? await Task.sleep(for: .milliseconds(200))
                     guard let self, !Task.isCancelled, self.source.state != .playing, self.phase == .playing else { return }
                     if Date().timeIntervalSince(self.rateChangedAt) < 2 {
-                        Log.note("pause: Music changes the clock — Roon plays on")
+                        Log.note("pause: Music changes the clock — \(peer) plays on")
                         return
                     }
                     self.roonControl("pause")
@@ -748,7 +754,7 @@ final class Bridge: ObservableObject {
                 if phase == .paused, let status = store?.status, roonSlice == status.number,
                    status.writtenMs - roonPositionMs > 20_000, let track {
                     let left = max(1000, track.durationMs - Int(s.position() * 1000))
-                    Log.note("resume: Roon is \((status.writtenMs - roonPositionMs) / 1000) s behind — a new run from where the Music app is")
+                    Log.note("resume: \(peer) is \((status.writtenMs - roonPositionMs) / 1000) s behind — a new run from where the Music app is")
                     store?.startTrack(.init(info: makeInfo(track), durationMs: left), newRun: true)
                 }
                 // The splice (0.3.2, see Splice): the Music app a little back, the run's end found again in the new sound.
@@ -1031,7 +1037,7 @@ final class Bridge: ObservableObject {
                 } else if let run = self.store?.status?.number {
                     // The run this track is written in (a skip began a new one; Roon may still be in the previous).
                     Task { await self.session?.updateInfo(track: String(run), info: info) }
-                    Log.note("cover: \(track.title) — found a moment later, sent to Roon")
+                    Log.note("cover: \(track.title) — found a moment later, sent to \(peer)")
                 }
                 return
             }
@@ -1168,6 +1174,7 @@ final class Bridge: ObservableObject {
             guard self.session === s else { return }
             if answer == "Playing" { self.roonSlice = slice.number; self.roonPositionMs = 0; self.roonTimeAt = Date(); self.nextSent = slice.number; self.movedOn(to: slice.number) }
             Log.note("play slice \(slice.number): the renderer answered \(answer)")
+            if answer != "Playing", self.isUPnP { self.fail("\(s.name) didn't play the next track") }
         }
     }
 

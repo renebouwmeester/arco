@@ -29,6 +29,8 @@ struct UPnPRenderer: Identifiable, Equatable, Sendable {
     /// service (a list of tracks in the renderer itself: Insert, SeekId, Id) and its Time service (the position).
     struct OpenHome: Equatable, Sendable { let playlist: URL; let playlistType: String; let time: URL?; let timeType: String }
     let openHome: OpenHome?
+    /// The highest rate it plays (Sonos: 48 kHz); nil when there is no known limit. Arco converts down to it.
+    var maxRate: Double? = nil
 
     /// Which renderers there are: an SSDP search (2.5 s), then each one's description.
     static func find() async -> [UPnPRenderer] {
@@ -109,9 +111,38 @@ struct UPnPRenderer: Identifiable, Equatable, Sendable {
             if type.hasPrefix("urn:av-openhome-org:service:Time:") { time = (url, type) }
         }
         guard avt != nil || playlist != nil else { return nil }
-        return UPnPRenderer(id: udn, name: name.replacingOccurrences(of: "&amp;", with: "&"), host: host, avTransport: avt?.0,
-                            avTransportType: avt?.1 ?? "", location: location,
-                            openHome: playlist.map { OpenHome(playlist: $0.0, playlistType: $0.1, time: time?.0, timeType: time?.1 ?? "") })
+        // Sonos (22 Oct 2026, the Era 100 pair): its room's name, not "192.168.1.138 - Sonos Era 100 SL - RINCON_…"; the
+        // hidden half of a stereo pair (or a sub) is no speaker of its own; and nothing above 48 kHz — it stopped at 96.
+        var shown = name.replacingOccurrences(of: "&amp;", with: "&"), maxRate: Double?
+        if maker.localizedCaseInsensitiveContains("Sonos") {
+            if await sonosHidden(udn: udn, host: host) { return nil }
+            shown = tag("roomName", in: xml).map { $0.replacingOccurrences(of: "&amp;", with: "&") } ?? shown
+            maxRate = 48000
+        }
+        var r = UPnPRenderer(id: udn, name: shown, host: host, avTransport: avt?.0,
+                             avTransportType: avt?.1 ?? "", location: location,
+                             openHome: playlist.map { OpenHome(playlist: $0.0, playlistType: $0.1, time: time?.0, timeType: time?.1 ?? "") })
+        r.maxRate = maxRate
+        return r
+    }
+
+    /// Whether this Sonos is hidden in its household (Invisible in the zone groups: the second speaker of a pair, a sub).
+    private static func sonosHidden(udn: String, host: String) async -> Bool {
+        guard let url = URL(string: "http://\(host):1400/ZoneGroupTopology/Control") else { return false }
+        let type = "urn:schemas-upnp-org:service:ZoneGroupTopology:1"
+        var request = URLRequest(url: url); request.timeoutInterval = 3; request.httpMethod = "POST"
+        request.setValue("text/xml; charset=\"utf-8\"", forHTTPHeaderField: "Content-Type")
+        request.setValue("\"\(type)#GetZoneGroupState\"", forHTTPHeaderField: "SOAPAction")
+        request.httpBody = Data(("<?xml version=\"1.0\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" "
+            + "s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body><u:GetZoneGroupState xmlns:u=\"\(type)\"/></s:Body></s:Envelope>").utf8)
+        guard let (data, _) = try? await URLSession.shared.data(for: request) else { return false }
+        let state = String(decoding: data, as: UTF8.self)
+            .replacingOccurrences(of: "&lt;", with: "<").replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&quot;", with: "\"").replacingOccurrences(of: "&amp;", with: "&")
+        let uuid = udn.replacingOccurrences(of: "uuid:", with: "")
+        guard let r = state.range(of: "UUID=\"\(uuid)\"") else { return false }
+        let member = state[r.lowerBound...].prefix(while: { $0 != ">" })
+        return member.contains("Invisible=\"1\"")
     }
 
     /// What it can, in one line for the log (21 Oct 2026 — for testers far away, a Linn Klimax DSM first): its maker, whether

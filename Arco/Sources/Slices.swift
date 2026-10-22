@@ -112,6 +112,12 @@ final class SliceStore: @unchecked Sendable {
     private var counter = 0
     /// One slice per track, each with its exact length (UPnP renderers; see the top of this file).
     var perTrack = false
+    /// The highest rate the renderer takes (Sonos: 48 kHz). Above it, the music is converted down as it is written, and
+    /// the slices are at the lower rate — see Downsampler.
+    var maxRate: Double?
+    private var down: Downsampler?
+    /// Who plays the slices, for the log ("Roon", "the renderer").
+    var peer = "Roon"
     /// Per track: the next track's slice, declared ahead — the writing goes on in it when the current one is full.
     private var queued: (slice: Slice, track: Track)?
     /// Per track: how much music at another rate than the empty declared slice was thrown away (the clock is changing).
@@ -213,8 +219,9 @@ final class SliceStore: @unchecked Sendable {
 
     /// Per track: the next track's slice, declared ahead (frames: its length at its rate). Replaces an earlier declared one
     /// nobody fetched yet. Nil when there is nothing it could follow.
-    func declare(_ t: Track, rate: Double, frames: Int) -> Slice? {
+    func declare(_ t: Track, rate askedRate: Double, frames askedFrames: Int) -> Slice? {
         lock.lock(); defer { lock.unlock() }
+        let rate = effective(askedRate), frames = max(1, Int(Double(askedFrames) * rate / askedRate))
         guard perTrack, current != nil || !overflow.isEmpty else { return nil }
         if let q = queued {
             guard !q.slice.headerSent, q.slice.written == 0, current !== q.slice else { return nil }
@@ -232,8 +239,9 @@ final class SliceStore: @unchecked Sendable {
     }
 
     /// Per track: the declared slice gets another rate (the label came later), as long as nobody fetched it.
-    func retag(_ s: Slice, rate: Double) -> Bool {
+    func retag(_ s: Slice, rate asked: Double) -> Bool {
         lock.lock(); defer { lock.unlock() }
+        let rate = effective(asked)
         guard !s.headerSent, s.written == 0, s.rate != rate else { return false }
         s.frames = max(1, Int(Double(s.frames) / s.rate * rate)); s.rate = rate
         return true
@@ -439,8 +447,22 @@ final class SliceStore: @unchecked Sendable {
 
     // MARK: - From the capture queue
 
-    func write(_ pcm: Data, frames: Int, firstSound: Int?, rate: Double) {
+    func write(_ captured: Data, frames capturedFrames: Int, firstSound capturedFirst: Int?, rate captureRate: Double) {
         lock.lock(); defer { lock.unlock() }
+        // Above what the renderer takes: converted first, and from here on everything is at the lower rate.
+        let rate = effective(captureRate)
+        var pcm = captured, frames = capturedFrames, firstSound = capturedFirst
+        if rate != captureRate {
+            if down?.from != captureRate || down?.to != rate {
+                down = Downsampler(from: captureRate, to: rate)
+                Log.note("runs: \(Int(captureRate)) Hz converted to \(Int(rate)) Hz — the most \(peer) takes")
+            }
+            pcm = down?.convert(captured) ?? Data()
+            frames = pcm.count / Self.bytesPerFrame
+            firstSound = capturedFirst.map { min(frames, Int(Double($0) * rate / captureRate)) }
+        } else {
+            down = nil
+        }
         var data = pcm, count = frames
         switch gate {
         case .writing:
@@ -533,7 +555,7 @@ final class SliceStore: @unchecked Sendable {
                     c.written = converted.count / Self.bytesPerFrame
                     c.rateSince = c.written
                     c.frames = perTrack ? max(1, Int(Double(c.frames) / old * rate)) : Self.capacity(rate)
-                    Log.note("runs: \(c.number) — rate \(Int(old)) → \(Int(rate)) before Roon had it: \(c.ms(c.written)) ms converted, it goes on")
+                    Log.note("runs: \(c.number) — rate \(Int(old)) → \(Int(rate)) before \(peer) had it: \(c.ms(c.written)) ms converted, it goes on")
                     continue
                 }
                 if c.rate != rate || c.isFull {
@@ -570,6 +592,14 @@ final class SliceStore: @unchecked Sendable {
             if overflow.count > cap { overflow = overflow.suffix(cap) }
             count = 0
         }
+    }
+
+    /// A rate as the slices have it: halved until the renderer takes it.
+    private func effective(_ rate: Double) -> Double {
+        guard let m = maxRate, rate > 0 else { return rate }
+        var r = rate
+        while r > m { r /= 2 }
+        return r
     }
 
     /// Under the lock: the pending run begins, starting with what waited in the overflow.
