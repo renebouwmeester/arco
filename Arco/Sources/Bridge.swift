@@ -469,7 +469,8 @@ final class Bridge: ObservableObject {
             // refused the new one at once, and the zone stayed silent): once more, a second later.
             // A UPnP renderer gets three more tries, two seconds apart (HQPlayer, 22 Oct 2026: busy restarting at a change of rate).
             for attempt in 1...(self.isUPnP ? 3 : 1) {
-                let retry = answer == "Timeout" || (answer == "MediaError" && self.phase != .starting)
+                // UPnP: only a refusal is tried again — a renderer that took its time (Timeout) has it already.
+                let retry = self.isUPnP ? answer == "MediaError" : answer == "Timeout" || (answer == "MediaError" && self.phase != .starting)
                 guard retry, self.session === s, self.store?.isCurrent(slice) == true else { break }
                 if answer == "MediaError" || self.isUPnP { try? await Task.sleep(for: .seconds(self.isUPnP ? 2 : 1)) }
                 let fresh = url + "?n=\(Int(Date().timeIntervalSince1970 * 1000))"

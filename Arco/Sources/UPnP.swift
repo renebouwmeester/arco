@@ -266,10 +266,14 @@ final class UPnPOutput: Output {
         self.track = track
         tracks[url] = track
         lastState = ""
-        // Playing once the renderer says so (it fetches and buffers first).
-        for _ in 0..<40 {
+        // Playing once the renderer says so (it fetches and buffers first). TRANSITIONING is patience, not a failure: HQPlayer
+        // fills a large buffer from a file that grows only as fast as the music (22 Oct 2026: more than 10 s), and a new
+        // SetAVTransportURI after a "timeout" started its buffering over — it never played. Up to 30 s then.
+        let until = Date().addingTimeInterval(30)
+        while Date() < until {
             let state = UPnPRenderer.value("CurrentTransportState", in: await renderer.avt("GetTransportInfo"))
             if state == "PLAYING" { lastState = "PLAYING"; startPolling(); return "Playing" }
+            if state == "STOPPED" || state == "NO_MEDIA_PRESENT", Date() > until.addingTimeInterval(-25) { break }
             try? await Task.sleep(for: .milliseconds(250))
         }
         startPolling()
