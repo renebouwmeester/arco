@@ -83,8 +83,33 @@ final class ArcoModel: ObservableObject {
         UserDefaults.standard.set(on, forKey: Self.roonKey)
         Log.note("roon: \(on ? "on" : "off") (the switch in the menu)")
         if on { connection.start() } else {
+            if bridge.isOn, !bridge.isUPnP, !bridge.isLocal { bridge.turnOff() }
             connection.stop()
             searchingSince = nil; searchTooLong = false
+        }
+    }
+
+    /// Local and UPnP get a switch of their own as well (22 Oct 2026, René: "is het niet logisch om alle drie de segmenten
+    /// aan/uit te maken?"). Off: not in the menu, and a target of that kind that plays is let go.
+    @Published private(set) var localOn = Bridge.localEnabled
+    @Published private(set) var upnpOn = UPnPFinder.enabled
+
+    func setLocal(_ on: Bool) {
+        guard on != localOn else { return }
+        localOn = on
+        UserDefaults.standard.set(on, forKey: "ThisMac")
+        Log.note("local: \(on ? "on" : "off") (the switch in the menu)")
+        if !on, bridge.isOn, bridge.isLocal { bridge.turnOff() }
+    }
+
+    func setUPnP(_ on: Bool) {
+        guard on != upnpOn else { return }
+        upnpOn = on
+        UserDefaults.standard.set(on, forKey: "UPnP")
+        Log.note("upnp: \(on ? "on" : "off") (the switch in the menu)")
+        if on { finder.start() } else {
+            if bridge.isOn, bridge.isUPnP { bridge.turnOff() }
+            finder.stop()
         }
     }
 

@@ -231,10 +231,15 @@ final class UPnPFinder: ObservableObject {
     private var described = Set<String>()
     static var enabled: Bool { UserDefaults.standard.object(forKey: "UPnP") as? Bool ?? true }   // on since 0.5.0b1 (the beta)
 
-    init() {
-        guard Self.enabled else { return }
-        Task { @MainActor [weak self] in
-            while let self {
+    private var search: Task<Void, Never>?
+
+    init() { if Self.enabled { start() } }
+
+    /// Looking for renderers, once a minute — or not (UPnP's switch in the menu, 22 Oct 2026).
+    func start() {
+        guard search == nil else { return }
+        search = Task { @MainActor [weak self] in
+            while let self, !Task.isCancelled {
                 // A renderer stays ten minutes after it last answered: the Mu-so doesn't answer every search (Basso, 20 Sept;
                 // here 21 Oct 20:22 — it vanished from the menu after one round).
                 for r in await UPnPRenderer.find() {
@@ -253,6 +258,11 @@ final class UPnPFinder: ObservableObject {
                 try? await Task.sleep(for: .seconds(60))
             }
         }
+    }
+
+    func stop() {
+        search?.cancel(); search = nil
+        seen = [:]; renderers = []
     }
 }
 

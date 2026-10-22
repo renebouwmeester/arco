@@ -23,6 +23,8 @@ struct MenuView: View {
     /// Enabled in Roon before, and connecting again — after a start or an update (0.3.1, René: "Het rijtje goed te keuren
     /// is nu weg – lijkt zichzelf te hebben hersteld?"): the menu says it connects instead of showing the checklist, whose
     /// "Enabled in Roon" stood open for those seconds. Only if Roon really waits for Enable does the checklist return.
+    /// The checklist while something is missing — also while Roon isn't connected, when a Roon zone is the target.
+    private var showsChecklist: Bool { !(macOK && (!roonNeeded || isPaired || reconnecting)) }
     private var reconnecting: Bool {
         if case .waitingForAuthorization = model.connectionState { return false }
         return model.roonOn && !isPaired && model.connection.wasPaired
@@ -40,7 +42,7 @@ struct MenuView: View {
             // The checklist while something is missing — also while Roon isn't connected (its last item).
             // Roon is only needed for a Roon zone (21 Oct 2026, René): with UPnP or This Mac chosen it's optional, and This
             // Mac needs no driver and no microphone either.
-            if !(macOK && (!roonNeeded || isPaired || reconnecting)) {
+            if showsChecklist {
                 SetupList(setup: setup, connection: model.connectionState, roonOptional: !roonNeeded, localOnly: model.selectedLocal != nil,
                           roonShown: model.roonOn)
             } else if reconnecting, roonNeeded {
@@ -51,11 +53,10 @@ struct MenuView: View {
                 Text("Can't find Roon — is the Core on this network? Also check System Settings › Privacy & Security › Local Network")
                     .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
-            // The switch and the targets: with Roon connected — or without it, for This Mac and UPnP (experimental).
-            if isPaired || Bridge.localEnabled || UPnPFinder.enabled {
-                if !macOK || !isPaired { Divider() }
-                content
-            }
+            // The switch and the targets — always: each kind of target has its own switch there.
+            // A line only under something (the checklist, the reconnecting line, the hint) — not a second one under the top.
+            if showsChecklist || (reconnecting && roonNeeded) || (roonNeeded && model.searchTooLong) { Divider() }
+            content
             Divider()
             // Two rows (11 Oct, René: "Show sample rate in… the sky?"): beside "Check for Updates…" — which only a release shows,
             // with Sparkle on — the second checkbox was cut off. Now it has a row of its own.
@@ -107,13 +108,21 @@ struct MenuView: View {
     @ViewBuilder private var content: some View {
         sending
         Divider()
-        // Roon, with its own switch (22 Oct 2026): off, the section is only this line.
-        HStack {
-            Text("Roon").font(.caption).foregroundStyle(.secondary)
-            Spacer()
-            Toggle("Roon", isOn: Binding(get: { model.roonOn }, set: { model.setRoon($0) }))
-                .toggleStyle(.switch).controlSize(.mini).labelsHidden()
+        // Three kinds of target, each with its own switch (22 Oct 2026, René): Local, Roon, UPnP. Off, a section is only
+        // its header.
+        // Local: this Mac's outputs, the clock per track for a DAC (see Bridge.isLocal).
+        header("Local (Experimental)", on: model.localOn) { model.setLocal($0) }
+        if model.localOn {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(AudioDevices.outputs) { out in
+                    let selected = "local:" + out.id == model.selectedZoneID
+                    RendererRow(name: out.name, selected: selected, line: selected && bridge.isOn ? playingLine : nil) {
+                        model.select(out)
+                    }
+                }
+            }
         }
+        header("Roon", on: model.roonOn) { model.setRoon($0) }
         // Only when another target is chosen: for a Roon zone the checklist (or the line at the top) says it already.
         if model.roonOn, !isPaired, !roonNeeded {
             Text(statusLine).font(.callout).foregroundStyle(.secondary)
@@ -139,40 +148,39 @@ struct MenuView: View {
                 }
             }
         }
-        // This Mac's outputs (experimental, behind the switch — see Bridge.isLocal): the clock per track for a DAC.
-            if Bridge.localEnabled {
-                Text("This Mac (Experimental)").font(.caption).foregroundStyle(.secondary)
+        // UPnP renderers (see UPnP.swift).
+        header("UPnP (Experimental)", on: model.upnpOn) { model.setUPnP($0) }
+        if model.upnpOn {
+            if finder.renderers.isEmpty {
+                Text("Looking for renderers…").font(.callout).foregroundStyle(.secondary)
+            } else {
                 VStack(alignment: .leading, spacing: 2) {
-                    ForEach(AudioDevices.outputs) { out in
-                        let selected = "local:" + out.id == model.selectedZoneID
-                        RendererRow(name: out.name, selected: selected,
-                                    line: selected && bridge.isOn ? bridge.nowPlaying.map { [$0.title, $0.artist].filter { !$0.isEmpty }.joined(separator: " · ") } : nil) {
-                            model.select(out)
+                    ForEach(finder.renderers) { r in
+                        let selected = "upnp:" + r.id == model.selectedZoneID
+                        RendererRow(name: r.name, selected: selected, line: selected && bridge.isOn ? playingLine : nil) {
+                            model.select(r)
                         }
                     }
                 }
             }
-            // UPnP renderers (experimental, behind the switch — see UPnP.swift).
-            if UPnPFinder.enabled {
-                Text("UPnP (Experimental)").font(.caption).foregroundStyle(.secondary)
-                if finder.renderers.isEmpty {
-                    Text("Looking for renderers…").font(.callout).foregroundStyle(.secondary)
-                } else {
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(finder.renderers) { r in
-                            let selected = "upnp:" + r.id == model.selectedZoneID
-                            RendererRow(name: r.name, selected: selected,
-                                        line: selected && bridge.isOn ? bridge.nowPlaying.map { [$0.title, $0.artist].filter { !$0.isEmpty }.joined(separator: " · ") } : nil) {
-                                model.select(r)
-                            }
-                        }
-                    }
-                }
-            }
+        }
     }
 }
 
 extension MenuView {
+    /// A section's header: its name, and its switch on the right.
+    func header(_ title: String, on: Bool, set: @escaping (Bool) -> Void) -> some View {
+        HStack {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            Toggle(title, isOn: Binding(get: { on }, set: set))
+                .toggleStyle(.switch).controlSize(.mini).labelsHidden()
+        }
+    }
+
+    /// "Title · Artist" of what Arco sends, under the chosen renderer or output.
+    var playingLine: String? { bridge.nowPlaying.map { [$0.title, $0.artist].filter { !$0.isEmpty }.joined(separator: " · ") } }
+
     /// The switch: the Music app to the chosen zone, or back to this Mac.
     @ViewBuilder var sending: some View {
         VStack(alignment: .leading, spacing: 4) {
