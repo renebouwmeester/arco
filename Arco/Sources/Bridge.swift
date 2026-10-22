@@ -107,6 +107,8 @@ final class Bridge: ObservableObject {
     private var coverNumber = 0
     private static let coverRun = String(UInt64.random(in: 0...UInt64.max), radix: 36)
     private var pendingPause: Task<Void, Never>?
+    /// The watch after a pause of the Music app around a change of clock (see clockPauseWatch).
+    private var clockPauseTask: Task<Void, Never>?
     private var termSource: DispatchSourceSignal?
     private var roonPositionMs = 0
     private var rateWatch: AudioObjectPropertyListenerBlock?
@@ -643,9 +645,33 @@ final class Bridge: ObservableObject {
 
     // MARK: - The sources (Music, Spotify)
 
+    /// The Music app pauses for a moment at every change of clock and plays on by itself — but it doesn't always say so
+    /// (22 Oct 2026, a tester: a skip to a 176.4 kHz track, the Music app showed playing, Arco waited for a "playing" that
+    /// never came and stayed silent until the next skip). A pause within two seconds of a change of clock: ask the Music app
+    /// itself, every half second for six seconds, until it plays or stays paused — a pause of the listener stays a pause.
+    private func clockPauseWatch() {
+        let pausedAt = Date()
+        clockPauseTask?.cancel()
+        clockPauseTask = Task { @MainActor [weak self] in
+            // The change of clock can come just after the pause (at most 0.12 s, see the pause below).
+            try? await Task.sleep(for: .milliseconds(600))
+            guard let self, !Task.isCancelled, abs(pausedAt.timeIntervalSince(self.rateChangedAt)) < 2 else { return }
+            for _ in 0..<12 {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard !Task.isCancelled, self.music.state == .paused else { return }
+                self.music.refresh()
+                if self.music.state == .playing {
+                    Log.note("music: plays again after the change of clock without saying so — asked it")
+                    return
+                }
+            }
+        }
+    }
+
     private func sourceChanged(_ s: PlayerSource, _ state: SourceState, _ track: SourceTrack?, _ changed: Bool) {
         Log.note("\(s.name.lowercased()): \(state.rawValue)\(changed ? " — \(track?.title ?? "-")" : "")\(s === source ? "" : " (not the source)")")
         guard phase != .switchingOn else { return }   // turnOn chooses the source itself, and pauses it on purpose
+        if s === music, state == .paused, phase != .off { clockPauseWatch() }
         if isLocal { if s === music { localSourceChanged(state, track, changed) }; return }
         if s === spotify, !Self.spotifyEnabled { return }
         if s !== source {
