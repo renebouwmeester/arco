@@ -17,7 +17,13 @@ const POORT = 9310;
 const MAP = path.join(os.homedir(), ".cache", "arcopi");
 const KEUZE = path.join(os.homedir(), ".config", "arcopi", "doel.json");
 const KAART = "UAC2Gadget";
-const VOORSPRONG = 4.5;   // s geschreven vóór de renderer begint (3 s voor elke renderer, zoals Arco)
+// De voorsprong per streamer (22 okt 2026, René: "maak de voorsprong per streamer instelbaar, KEF op 1 s"): zoveel
+// seconden geschreven vóór de renderer begint. Standaard 3 (de Ellipse en de Mu-so hebben dat nodig), de KEF 1. Na een
+// skip hoor je zoveel seconden van het oude nummer na.
+const VOORSPRONG_STANDAARD = 3;
+const VOORSPRONGEN = path.join(os.homedir(), ".config", "arcopi", "voorsprong.json");
+let voorsprongen = (() => { try { return JSON.parse(fs.readFileSync(VOORSPRONGEN, "utf8")); } catch { return {}; } })();
+const voorsprong = () => (doel && voorsprongen[doel.id]) || VOORSPRONG_STANDAARD;
 const log = (...a) => console.log(new Date().toISOString().slice(11, 23), ...a);
 
 fs.rmSync(MAP, { recursive: true, force: true }); fs.mkdirSync(MAP, { recursive: true });
@@ -53,7 +59,7 @@ function nieuweRun(rate) {
 function sluitRun() {
   if (!run) return;
   run.dicht = true; for (const l of run.lezers) pomp(run, l);
-  if (speelt === run) speeltTot = Date.now() + (VOORSPRONG + 1) * 1000;
+  if (speelt === run) speeltTot = Date.now() + (voorsprong() + 1) * 1000;
   run = null;
 }
 function schrijf(buf) {
@@ -64,7 +70,7 @@ function schrijf(buf) {
   // Speelt de renderer nog de vorige run (de iPhone wisselde van rate of van nummer): deze als volgende, meteen — hij gaat
   // er zelf naartoe als de vorige uit is. Anders (een start, of na een pauze): spelen met de voorsprong.
   if (!run.gespeeld && speelt && speelt !== run && Date.now() < speeltTot) { run.gespeeld = true; zetVolgende(run); }
-  if (!run.gespeeld && run.geschreven >= VOORSPRONG * run.rate * 6) { run.gespeeld = true; speel(run); }
+  if (!run.gespeeld && run.geschreven >= voorsprong() * run.rate * 6) { run.gespeeld = true; speel(run); }
 }
 
 // ---- de opvang van de gadget ---------------------------------------------------------------------------------------
@@ -177,14 +183,15 @@ async function zetVolgende(r) {
 
 // ---- de webpagina ---------------------------------------------------------------------------------------------------
 function pagina() {
-  const rij = (id, naam, sub) => `<label><input type="radio" name="doel" value="${esc(id)}" ${doel?.id === id || (!doel && id === "") ? "checked" : ""} onchange="this.form.submit()"> <span>${esc(naam)}</span>${sub ? `<small>${esc(sub)}</small>` : ""}</label>`;
+  const keuze = (id) => `<select onchange="fetch('/voorsprong',{method:'POST',body:new URLSearchParams({id:'${esc(id)}',s:this.value})})" title="Lead">${[1, 2, 3, 5].map((v) => `<option value="${v}" ${(voorsprongen[id] || VOORSPRONG_STANDAARD) === v ? "selected" : ""}>${v} s</option>`).join("")}</select>`;
+  const rij = (id, naam, sub) => `<label><input type="radio" name="doel" value="${esc(id)}" ${doel?.id === id || (!doel && id === "") ? "checked" : ""} onchange="this.form.submit()"> <span>${esc(naam)}</span>${sub ? `<small>${esc(sub)} · lead ${keuze(id)}</small>` : ""}</label>`;
   const lijst = [...renderers.values()].sort((a, b) => a.naam.localeCompare(b.naam));
   const nu = run ? `${run.rate / 1000} kHz` : opnameRate ? `${opnameRate / 1000} kHz` : "Idle";
   return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Arco Pi</title>
 <style>:root{color-scheme:light dark;--bg:#fff;--fg:#111;--sub:#6b6b6b;--line:#ddd}@media (prefers-color-scheme:dark){:root{--bg:#111;--fg:#eee;--sub:#999;--line:#333}}
 body{margin:0;padding:24px 16px;background:var(--bg);color:var(--fg);font:16px/1.4 -apple-system,system-ui,sans-serif;max-width:520px}
 h1{font-size:22px;font-weight:600;margin:0 0 4px}p{color:var(--sub);margin:0 0 20px}label{display:flex;align-items:baseline;gap:10px;padding:12px 0;border-bottom:1px solid var(--line)}
-small{color:var(--sub);margin-left:auto}h2{font-size:13px;font-weight:600;color:var(--sub);text-transform:uppercase;letter-spacing:.04em;margin:24px 0 4px}</style>
+small{color:var(--sub);margin-left:auto}select{font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:6px;padding:1px 4px}h2{font-size:13px;font-weight:600;color:var(--sub);text-transform:uppercase;letter-spacing:.04em;margin:24px 0 4px}</style>
 <h1>Arco Pi</h1><p>From the iPhone: ${esc(nu)}</p><form method="post" action="/doel">
 <h2>Play to</h2>${rij("", "Nowhere", "")}${lijst.map((r) => rij(r.id, r.naam, "UPnP")).join("")}
 </form><p style="margin-top:20px">${lijst.length ? "" : "Looking for streamers…"}</p></html>`;
@@ -206,6 +213,15 @@ http.createServer((req, res) => {
       if (oud && oud.id !== doel?.id) avt(oud, "Stop");
       if (run && run.gespeeld) speel(run);   // speelt er al iets: meteen naar het nieuwe doel
       res.writeHead(303, { Location: "/" }); res.end();
+    });
+    return;
+  }
+  if (u.pathname === "/voorsprong" && req.method === "POST") {
+    let body = ""; req.on("data", (d) => body += d);
+    req.on("end", () => {
+      const q = new URLSearchParams(body), id = q.get("id"), v = Number(q.get("s"));
+      if (id && [1, 2, 3, 5].includes(v)) { voorsprongen[id] = v; fs.writeFileSync(VOORSPRONGEN, JSON.stringify(voorsprongen)); log(`voorsprong: ${renderers.get(id)?.naam ?? id} ${v} s`); }
+      res.writeHead(204); res.end();
     });
     return;
   }
