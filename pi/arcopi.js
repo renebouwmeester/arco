@@ -71,7 +71,7 @@ function schrijf(buf) {
 // De rate die de iPhone instelt (0 = de stroom is dicht), elke 250 ms; bij een andere rate een nieuwe opname.
 let opname = null, opnameRate = 0;
 function leesRate() {
-  execFile("amixer", ["-c", KAART, "cget", "name=Capture Rate"], (e, uit) => {
+  execFile("amixer", ["-c", KAART, "cget", "iface=PCM,name=Capture Rate"], (e, uit) => {
     const m = /: values=(\d+)/.exec(uit || ""); const rate = m ? +m[1] : 0;
     if (rate !== opnameRate) wissel(rate);
   });
