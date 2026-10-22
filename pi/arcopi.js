@@ -96,6 +96,10 @@ function wissel(rate) {
 
 // ---- de stroom naar de renderer ------------------------------------------------------------------------------------
 function beantwoord(r, req, res) {
+  // Een gesloten run die al tot zijn einde is uitgeleverd, komt niet terug: de Ellipse haalde hem aan zijn (vroege) einde
+  // opnieuw op vanaf het begin en speelde het vorige nummer nog eens (22 okt 2026, 13:21) — nu een 404, dan gaat hij naar
+  // de volgende of stopt (en dan start bewaakVolgende die).
+  if (r.dicht && r.uitgeleverd) { log(`run ${r.nr}: opnieuw gevraagd na zijn einde — 404`); res.writeHead(404, { "Connection": "close" }); return res.end(); }
   const totaal = 44 + capaciteit(r.rate) * 6;
   let vanaf = 0; const m = /bytes=(\d+)-/.exec(req.headers.range || ""); if (m) vanaf = Math.min(totaal, +m[1]);
   const kop = { "Content-Type": "audio/wav", "Accept-Ranges": "bytes", "Connection": "close", "transferMode.dlna.org": "Streaming",
@@ -110,7 +114,7 @@ function beantwoord(r, req, res) {
 }
 function pomp(r, l) {
   if (l.bezig || l.destroyed) return;
-  if (l.offset >= r.geschreven) { if (r.dicht) l.end(); return; }
+  if (l.offset >= r.geschreven) { if (r.dicht) { r.uitgeleverd = true; l.end(); } return; }
   const n = Math.min(262144, r.geschreven - l.offset), buf = Buffer.alloc(n);
   fs.readSync(r.fd, buf, 0, n, l.offset); l.offset += n;
   l.bezig = true;
