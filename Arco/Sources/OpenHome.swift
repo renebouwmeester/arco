@@ -40,6 +40,8 @@ final class OpenHomeOutput: Output {
 
     /// A new start: the renderer's playlist emptied, this slice in it, and played.
     func play(track: String, url: String, info: JSON) async -> String {
+        // The tracker first: it read the old list while it was emptied ("slice 2 — ?", 22 Oct 11:06:04).
+        poller?.cancel(); poller = nil
         _ = await playlist("DeleteAll")
         tracks = [:]
         guard let id = await insert(after: 0, url: url, info: info),
