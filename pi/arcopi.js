@@ -120,6 +120,25 @@ function pomp(r, l) {
 
 // ---- UPnP: renderers vinden en besturen ----------------------------------------------------------------------------
 let renderers = new Map();   // id → { id, naam, location, avt, avtType }
+// Eén renderer uit zijn beschrijving (het bewaarde adres van het doel: na een herstart hoeft de Pi niet op de zoekronde
+// te wachten — 22 okt 2026, 10:00:20: run 1 vond de KEF nog niet en speelde nergens).
+async function beschrijf(loc) {
+  try {
+    const xml = await (await fetch(loc, { signal: AbortSignal.timeout(3000) })).text();
+    const tag = (t, x = xml) => (new RegExp(`<${t}>([^<]*)</${t}>`).exec(x) || [])[1];
+    const id = tag("UDN"), naam = (tag("friendlyName") || "?").replace(/&amp;/g, "&");
+    if (!id || /Sonos|Signalyst|Samsung/i.test(tag("manufacturer") || "")) return null;
+    for (const blok of xml.split("<service>").slice(1)) {
+      const type = tag("serviceType", blok);
+      if (type && type.includes(":service:AVTransport:")) {
+        const r = { id, naam, location: loc, avt: new URL(tag("controlURL", blok), tag("URLBase") || loc).href, avtType: type, op: Date.now() };
+        renderers.set(id, r); return r;
+      }
+    }
+  } catch {}
+  return null;
+}
+async function doelRenderer() { return (doel && (renderers.get(doel.id) ?? (doel.location && await beschrijf(doel.location)))) || null; }
 function zoek() {
   const s = dgram.createSocket("udp4"), gevonden = new Set();
   const q = Buffer.from('M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: "ssdp:discover"\r\nMX: 2\r\nST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n');
@@ -127,20 +146,7 @@ function zoek() {
   s.bind(() => { s.setMulticastTTL(2); s.send(q, 1900, "239.255.255.250"); s.send(q, 1900, "239.255.255.250"); });
   setTimeout(async () => {
     s.close();
-    for (const loc of gevonden) {
-      try {
-        const xml = await (await fetch(loc, { signal: AbortSignal.timeout(3000) })).text();
-        const tag = (t, x = xml) => (new RegExp(`<${t}>([^<]*)</${t}>`).exec(x) || [])[1];
-        const id = tag("UDN"), naam = (tag("friendlyName") || "?").replace(/&amp;/g, "&");
-        if (!id || /Sonos|Signalyst|Samsung/i.test(tag("manufacturer") || "")) continue;
-        for (const blok of xml.split("<service>").slice(1)) {
-          const type = tag("serviceType", blok);
-          if (type && type.includes(":service:AVTransport:")) {
-            renderers.set(id, { id, naam, location: loc, avt: new URL(tag("controlURL", blok), tag("URLBase") || loc).href, avtType: type, op: Date.now() });
-          }
-        }
-      } catch {}
-    }
+    for (const loc of gevonden) await beschrijf(loc);
     for (const [id, r] of renderers) if (Date.now() - r.op > 10 * 60 * 1000) renderers.delete(id);
   }, 2500);
 }
@@ -161,7 +167,7 @@ function mijnIP(naar) {
   return "127.0.0.1";
 }
 async function speel(r) {
-  const d = doel && renderers.get(doel.id);
+  const d = await doelRenderer();
   if (!d) { log(`run ${r.nr}: geen doel gekozen (of niet gevonden) — niets te spelen`); return; }
   const url = runURL(r);
   if (await avt(d, "SetAVTransportURI", `<CurrentURI>${esc(url)}</CurrentURI><CurrentURIMetaData>${esc(didl(url))}</CurrentURIMetaData>`) === null) return;
@@ -174,7 +180,7 @@ function didl(url) {
   return `<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"><item id="arcopi" parentID="0" restricted="1"><dc:title>iPhone</dc:title><upnp:artist>Arco Pi</upnp:artist><upnp:class>object.item.audioItem.musicTrack</upnp:class><res protocolInfo="http-get:*:audio/wav:DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000">${esc(url)}</res></item></DIDL-Lite>`;
 }
 async function zetVolgende(r) {
-  const d = doel && renderers.get(doel.id); if (!d) return;
+  const d = await doelRenderer(); if (!d) return;
   const url = runURL(r);
   const ok = await avt(d, "SetNextAVTransportURI", `<NextURI>${esc(url)}</NextURI><NextURIMetaData>${esc(didl(url))}</NextURIMetaData>`) !== null;
   log(`run ${r.nr} (${r.rate} Hz) als volgende → ${d.naam}${ok ? "" : " — geweigerd, dan opnieuw starten"}`);
