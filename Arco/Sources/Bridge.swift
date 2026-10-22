@@ -488,7 +488,7 @@ final class Bridge: ObservableObject {
                 self.nextSent = slice.number      // a new transport URI clears the renderer's next: set it again
                 self.movedOn(to: slice.number)   // per track: and its next
             } else if self.phase == .starting {
-                self.fail("\(s.name): \(answer)")
+                self.fail(answer == "Timeout" ? "\(s.name) didn't start playing" : "\(s.name): \(answer)")
             }
         }
     }

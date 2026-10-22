@@ -93,10 +93,12 @@ struct UPnPRenderer: Identifiable, Equatable, Sendable {
         // Not yet (René, 21 Oct 2026: "de exoten maar even wegfilteren"): Sonos (48 kHz at most, groups), HQPlayer (no
         // SetNext — it wants the runs) and televisions. Measured first, then let in.
         let maker = tag("manufacturer", in: xml) ?? ""
-        // `defaults write nl.renebouwmeester.arco UPnPShowAll -bool true` shows them anyway (22 Oct 2026: HQPlayer, to try the
-        // runs for a renderer that refuses SetNext).
+        // HQPlayer never (René, 22 Oct 2026: "laten we HQPlayer helemaal vergeten voor dit project"): after Play its UPnP side
+        // stayed in TRANSITIONING at 0:00:00 — it wants whole files and its own XML control, as Basso found on 2 Oct.
+        if maker.localizedCaseInsensitiveContains("Signalyst") { return nil }
+        // `defaults write nl.renebouwmeester.arco UPnPShowAll -bool true` shows them anyway, to measure them.
         if !UserDefaults.standard.bool(forKey: "UPnPShowAll"),
-           ["Sonos", "Signalyst", "Samsung", "LG Electronics", "Sony"].contains(where: { maker.localizedCaseInsensitiveContains($0) }) { return nil }
+           ["Sonos", "Samsung", "LG Electronics", "Sony"].contains(where: { maker.localizedCaseInsensitiveContains($0) }) { return nil }
         let base = tag("URLBase", in: xml).flatMap(URL.init(string:)) ?? location
         var avt: (URL, String)?, playlist: (URL, String)?, time: (URL, String)?
         for block in xml.components(separatedBy: "<service>").dropFirst() {
