@@ -467,12 +467,14 @@ final class Bridge: ObservableObject {
             Log.note("play run \(slice.number) (\(Self.lines(slice.info)?.title ?? "?")): Roon answered \(answer)")
             // A MediaError for a run of a running session (9 Oct 20:27:10, a skip: Roon still closing the dropped run
             // refused the new one at once, and the zone stayed silent): once more, a second later.
-            let retry = answer == "Timeout" || (answer == "MediaError" && self.phase != .starting)
-            if retry, self.session === s, self.store?.isCurrent(slice) == true {
-                if answer == "MediaError" { try? await Task.sleep(for: .seconds(1)) }
+            // A UPnP renderer gets three more tries, two seconds apart (HQPlayer, 22 Oct 2026: busy restarting at a change of rate).
+            for attempt in 1...(self.isUPnP ? 3 : 1) {
+                let retry = answer == "Timeout" || (answer == "MediaError" && self.phase != .starting)
+                guard retry, self.session === s, self.store?.isCurrent(slice) == true else { break }
+                if answer == "MediaError" || self.isUPnP { try? await Task.sleep(for: .seconds(self.isUPnP ? 2 : 1)) }
                 let fresh = url + "?n=\(Int(Date().timeIntervalSince1970 * 1000))"
                 answer = await s.play(track: String(slice.number), url: fresh, info: slice.info)
-                Log.note("play run \(slice.number) again: Roon answered \(answer)")
+                Log.note("play run \(slice.number) again (\(attempt)): Roon answered \(answer)")
             }
             guard self.session === s else { return }
             if answer == "Playing" || answer == "Unpaused" {

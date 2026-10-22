@@ -159,7 +159,9 @@ struct UPnPRenderer: Identifiable, Equatable, Sendable {
         let body = "<?xml version=\"1.0\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" "
             + "s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body><u:\(action) xmlns:u=\"\(type)\">"
             + "\(args)</u:\(action)></s:Body></s:Envelope>"
-        var request = URLRequest(url: url); request.timeoutInterval = 5
+        // The commands get longer (22 Oct 2026: HQPlayer answered nothing for 5 s while it restarted its pipeline at a change
+        // of rate, and run 2 never reached it); the questions stay short.
+        var request = URLRequest(url: url); request.timeoutInterval = action.hasPrefix("Get") || action == "TransportState" || action == "Id" || action == "Time" ? 5 : 15
         request.httpMethod = "POST"
         request.setValue("text/xml; charset=\"utf-8\"", forHTTPHeaderField: "Content-Type")
         request.setValue("\"\(type)#\(action)\"", forHTTPHeaderField: "SOAPAction")
