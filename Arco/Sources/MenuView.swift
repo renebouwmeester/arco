@@ -32,11 +32,12 @@ struct MenuView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            // The version on the right (22 Oct 2026, René: "moeten versienummer en de grote switch nu ook niet rechts
+            // lijnen?"); Roon's status lives in the Roon section now.
             HStack(alignment: .firstTextBaseline) {
                 Text("Arco").font(.headline)
-                Text(Self.version).font(.callout).foregroundStyle(.tertiary)
                 Spacer()
-                Text(statusLine).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                Text(Self.version).font(.callout).foregroundStyle(.tertiary)
             }
             Divider()
             // The checklist while something is missing — also while Roon isn't connected (its last item).
@@ -113,8 +114,9 @@ struct MenuView: View {
             }
         }
         header("Roon", symbol: "music.note.house.fill", on: model.roonOn) { model.setRoon($0) }
-        // Only when another target is chosen: for a Roon zone the checklist (or the line at the top) says it already.
-        if model.roonOn, !isPaired, !roonNeeded {
+        // Where Arco stands with Roon (it was the line at the top, 22 Oct 2026): connected — or, with another target chosen,
+        // looking or connecting (for a Roon zone the checklist says that already).
+        if model.roonOn, isPaired || !roonNeeded {
             Text(statusLine).font(.callout).foregroundStyle(.secondary)
         }
         if model.roonOn, isPaired {
@@ -180,12 +182,15 @@ extension MenuView {
     /// The switch: the Music app to the chosen zone, or back to this Mac.
     @ViewBuilder var sending: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Toggle(isOn: Binding(get: { bridge.isOn }, set: { model.setSending($0) })) {
+            // The switch on the right, like those of Local, Roon and UPnP below (22 Oct 2026).
+            HStack {
                 Text("Enable").font(.body.weight(.medium))
+                Spacer()
+                Toggle("Enable", isOn: Binding(get: { bridge.isOn }, set: { model.setSending($0) }))
+                    .toggleStyle(.switch).labelsHidden()
+                    // This Mac needs no Arco driver: the Music app plays to the DAC itself.
+                    .disabled((!Bridge.driverInstalled && model.selectedLocal == nil) || (model.selectedName == nil && !bridge.isOn))
             }
-            .toggleStyle(.switch)
-            // This Mac needs no Arco driver: the Music app plays to the DAC itself.
-            .disabled((!Bridge.driverInstalled && model.selectedLocal == nil) || (model.selectedName == nil && !bridge.isOn))
             Text(sendingLine)
                 .font(.callout)
                 .foregroundStyle(isFailure ? Color.red : .secondary)
