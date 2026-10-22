@@ -99,7 +99,7 @@ struct SetupList: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Get started").font(.caption).foregroundStyle(.secondary)
+            Text("Get started").font(.callout).foregroundStyle(.secondary)
             if !localOnly {
                 item(done: setup.driver, "Audio driver",
                      setup.driver ? "Installed" : "Missing — run the Arco installer again")
@@ -149,7 +149,7 @@ struct SetupList: View {
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).font(.callout.weight(done ? .regular : .semibold))
-                Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(detail).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
             if let button {

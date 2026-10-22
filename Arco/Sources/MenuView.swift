@@ -34,9 +34,9 @@ struct MenuView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Arco").font(.headline)
-                Text(Self.version).font(.caption).foregroundStyle(.tertiary)
+                Text(Self.version).font(.callout).foregroundStyle(.tertiary)
                 Spacer()
-                Text(statusLine).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(statusLine).font(.callout).foregroundStyle(.secondary).lineLimit(1)
             }
             Divider()
             // The checklist while something is missing — also while Roon isn't connected (its last item).
@@ -51,38 +51,28 @@ struct MenuView: View {
             // Still no Roon after 30 s: what to check (only when a Roon zone is the target).
             if roonNeeded, model.searchTooLong {
                 Text("Can't find Roon — is the Core on this network? Also check System Settings › Privacy & Security › Local Network")
-                    .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    .font(.callout).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
             // The switch and the targets — always: each kind of target has its own switch there.
             // A line only under something (the checklist, the reconnecting line, the hint) — not a second one under the top.
             if showsChecklist || (reconnecting && roonNeeded) || (roonNeeded && model.searchTooLong) { Divider() }
             content
             Divider()
-            // Two rows (11 Oct, René: "Show sample rate in… the sky?"): beside "Check for Updates…" — which only a release shows,
-            // with Sparkle on — the second checkbox was cut off. Now it has a row of its own.
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    LoginItemToggle()
-                    Spacer()
-                    if model.updater.available {
-                        Button("Check for Updates…") { model.updater.checkForUpdates() }
-                            .buttonStyle(.borderless)
-                    }
-                }
+            // The bottom as in a macOS menu (22 Oct 2026, René: "onderin is het een beetje een chaos geworden"): the two
+            // settings as rows with a switch, like the headers above; then the actions, each a row of its own.
+            VStack(alignment: .leading, spacing: 6) {
+                LoginItemToggle()
                 RateInMenuBarToggle()
             }
-            HStack {
-                Button("Uninstall Arco…") { Uninstaller.run(bridge: bridge) }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(.secondary)
-                Spacer()
+            Divider()
+            VStack(alignment: .leading, spacing: 0) {
+                if model.updater.available {
+                    MenuActionRow(title: "Check for Updates…") { model.updater.checkForUpdates() }
+                }
                 // The log in Finder, selected — ~/Library is hidden, and a bug report wants the file (René, 8 Oct).
-                Button("Show Log") { Log.reveal() }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(.secondary)
-                    .padding(.trailing, 10)
-                Button("Quit Arco") { NSApplication.shared.terminate(nil) }
-                    .buttonStyle(.borderless)
+                MenuActionRow(title: "Show Log") { Log.reveal() }
+                MenuActionRow(title: "Uninstall Arco…") { Uninstaller.run(bridge: bridge) }
+                MenuActionRow(title: "Quit Arco", shortcut: "⌘Q") { NSApplication.shared.terminate(nil) }
                     .keyboardShortcut("q")
             }
         }
@@ -197,16 +187,16 @@ extension MenuView {
             // This Mac needs no Arco driver: the Music app plays to the DAC itself.
             .disabled((!Bridge.driverInstalled && model.selectedLocal == nil) || (model.selectedName == nil && !bridge.isOn))
             Text(sendingLine)
-                .font(.caption)
+                .font(.callout)
                 .foregroundStyle(isFailure ? Color.red : .secondary)
                 .fixedSize(horizontal: false, vertical: true)
             // 0.4.0: the Music app below volume 100 scales every sample — bit-perfect only at 100.
             if bridge.isOn, let v = bridge.musicVolume, v < 100 {
                 HStack(spacing: 6) {
-                    Text("Music volume \(v) — not bit-perfect").font(.caption).foregroundStyle(.orange)
+                    Text("Music volume \(v) — not bit-perfect").font(.callout).foregroundStyle(.orange)
                     Spacer()
                     Button("Set to 100") { bridge.setMusicVolumeTo100() }
-                        .buttonStyle(.borderless).font(.caption)
+                        .buttonStyle(.borderless).font(.callout)
                 }
             }
         }
@@ -259,7 +249,7 @@ private struct RendererRow: View {
                     .frame(width: 18)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(name).font(.body)
-                    if let line, !line.isEmpty { Text("▶︎ " + line).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                    if let line, !line.isEmpty { Text("▶︎ " + line).font(.callout).foregroundStyle(.secondary).lineLimit(1) }
                 }
                 Spacer(minLength: 0)
             }
@@ -288,7 +278,7 @@ private struct ZoneRow: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(zone.name).font(.body)
                     if let line = playingLine {
-                        Text(line).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Text(line).font(.callout).foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
                 Spacer(minLength: 0)
@@ -324,11 +314,11 @@ private struct RateRow: View {
             Text("Follow Each Track (Bit-Perfect)").tag(false)
             Text("Fixed 96 kHz (No Rate Switches)").tag(true)
         } label: {
-            Image(systemName: "waveform").foregroundStyle(.secondary).font(.caption)
+            Image(systemName: "waveform").foregroundStyle(.secondary).font(.callout)
         }
         .pickerStyle(.menu)
         .controlSize(.small)
-        .font(.caption)
+        .font(.callout)
         .fixedSize()
     }
 }
@@ -344,7 +334,7 @@ private struct VolumeRow: View {
         if let volume = zone.volume {
             HStack(spacing: 8) {
                 Image(systemName: volume.isMuted ? "speaker.slash.fill" : "speaker.fill")
-                    .foregroundStyle(.secondary).font(.caption)
+                    .foregroundStyle(.secondary).font(.callout)
                 if volume.type == "incremental" {
                     Button { model.stepVolume(zone, up: false) } label: { Image(systemName: "minus") }
                     Button { model.stepVolume(zone, up: true) } label: { Image(systemName: "plus") }
@@ -380,5 +370,45 @@ private struct VolumeRow: View {
         let step = volume.step > 0 ? volume.step : 1
         let shown = (value / step).rounded() * step
         return volume.type == "db" ? String(format: "%.0f dB", shown) : String(format: "%.0f", shown)
+    }
+}
+
+/// A setting in the menu: its name, and a switch on the right (as the headers Local, Roon and UPnP).
+struct SettingRow: View {
+    let title: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Toggle(title, isOn: $isOn)
+                .toggleStyle(.switch).controlSize(.mini).labelsHidden()
+        }
+    }
+}
+
+/// An action in the menu, a row of its own as in a macOS menu: the whole width answers, and it lights up under the pointer.
+struct MenuActionRow: View {
+    let title: String
+    var shortcut: String? = nil
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack {
+                Text(title)
+                Spacer()
+                if let shortcut { Text(shortcut).foregroundStyle(.tertiary) }
+            }
+            .padding(.horizontal, 6).padding(.vertical, 3)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 5).fill(hovering ? Color.primary.opacity(0.08) : .clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, -6)
+        .onHover { hovering = $0 }
     }
 }

@@ -29,7 +29,6 @@ struct RateInMenuBarToggle: View {
     @AppStorage(MenuBarLabel.key) private var showRate = true
 
     var body: some View {
-        Toggle("Show Sample Rate in Menu Bar", isOn: $showRate)
-            .toggleStyle(.checkbox)
+        SettingRow(title: "Show Sample Rate in Menu Bar", isOn: $showRate)
     }
 }
