@@ -111,7 +111,7 @@ struct MenuView: View {
         // Three kinds of target, each with its own switch (22 Oct 2026, René): Local, Roon, UPnP. Off, a section is only
         // its header.
         // Local: this Mac's outputs, the clock per track for a DAC (see Bridge.isLocal).
-        header("Local (Experimental)", on: model.localOn) { model.setLocal($0) }
+        header("Local", symbol: "laptopcomputer", on: model.localOn) { model.setLocal($0) }
         if model.localOn {
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(AudioDevices.outputs) { out in
@@ -122,7 +122,7 @@ struct MenuView: View {
                 }
             }
         }
-        header("Roon", on: model.roonOn) { model.setRoon($0) }
+        header("Roon", symbol: "music.note.house.fill", on: model.roonOn) { model.setRoon($0) }
         // Only when another target is chosen: for a Roon zone the checklist (or the line at the top) says it already.
         if model.roonOn, !isPaired, !roonNeeded {
             Text(statusLine).font(.callout).foregroundStyle(.secondary)
@@ -149,7 +149,7 @@ struct MenuView: View {
             }
         }
         // UPnP renderers (see UPnP.swift).
-        header("UPnP (Experimental)", on: model.upnpOn) { model.setUPnP($0) }
+        header("UPnP", symbol: "network", on: model.upnpOn) { model.setUPnP($0) }
         if model.upnpOn {
             if finder.renderers.isEmpty {
                 Text("Looking for renderers…").font(.callout).foregroundStyle(.secondary)
@@ -168,10 +168,16 @@ struct MenuView: View {
 }
 
 extension MenuView {
-    /// A section's header: its name, and its switch on the right.
-    func header(_ title: String, on: Bool, set: @escaping (Bool) -> Void) -> some View {
-        HStack {
-            Text(title).font(.caption).foregroundStyle(.secondary)
+    /// A section's header (22 Oct 2026, René: the bare captions were "hele iele kopjes"): as in macOS's own Wi-Fi and
+    /// Bluetooth menus — a symbol in a circle, blue when the section is on, then its name, and its switch on the right.
+    func header(_ title: String, symbol: String, on: Bool, set: @escaping (Bool) -> Void) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(on ? Color.white : .secondary)
+                .frame(width: 22, height: 22)
+                .background(Circle().fill(on ? Color.accentColor : Color.secondary.opacity(0.18)))
+            Text(title).font(.body.weight(.semibold))
             Spacer()
             Toggle(title, isOn: Binding(get: { on }, set: set))
                 .toggleStyle(.switch).controlSize(.mini).labelsHidden()
