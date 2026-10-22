@@ -38,7 +38,8 @@ final class ArcoModel: ObservableObject {
         connection.onStateChange = { [weak self] state in self?.connectionChanged(state) }
         tracker.onChange = { [weak self] zones in self?.zonesChanged(zones) }
         connection.setStatus("Starting")
-        connection.start()
+        roonOn = UserDefaults.standard.object(forKey: Self.roonKey) as? Bool ?? connection.wasPaired
+        if roonOn { connection.start() }
         Updater.announceIfUpdated()
     }
 
@@ -68,6 +69,23 @@ final class ArcoModel: ObservableObject {
         UserDefaults.standard.set(id, forKey: Self.zoneIDKey)
         UserDefaults.standard.set(renderer.name, forKey: Self.zoneNameKey)
         if switching, bridge.isOn { Task { await bridge.turnOn(renderer: renderer) } }
+    }
+
+    /// Roon on or off (22 Oct 2026, René: for someone without Roon "Looking for Roon…" was "een beetje naargeestig"). Off:
+    /// no looking for a Core, no status line, no Roon in the checklist. Standard: on for a Mac that was ever enabled in
+    /// Roon (an update changes nothing), off for a fresh install.
+    @Published private(set) var roonOn = false
+    private static let roonKey = "Roon"
+
+    func setRoon(_ on: Bool) {
+        guard on != roonOn else { return }
+        roonOn = on
+        UserDefaults.standard.set(on, forKey: Self.roonKey)
+        Log.note("roon: \(on ? "on" : "off") (the switch in the menu)")
+        if on { connection.start() } else {
+            connection.stop()
+            searchingSince = nil; searchTooLong = false
+        }
     }
 
     /// "Arco on William" — the name in Roon's list of extensions.
@@ -103,7 +121,7 @@ final class ArcoModel: ObservableObject {
 
     private func connectionChanged(_ state: RoonConnection.State) {
         connectionState = state
-        if case .searching = state {
+        if case .searching = state, roonOn {
             if searchingSince == nil {
                 searchingSince = Date(); searchNoted = false
                 Task { @MainActor [weak self] in

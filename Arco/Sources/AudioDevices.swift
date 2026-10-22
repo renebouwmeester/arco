@@ -78,6 +78,14 @@ enum AudioDevices {
             let text = name.takeRetainedValue() as String
             // Not Basso's own virtual device (René's Macs) — Arco's is out by its UID above.
             guard !text.hasPrefix("Basso") else { return nil }
+            // Not a Multi-Output or Aggregate Device (22 Oct 2026, a tester's "Multiausgangsgerät"): several devices at once,
+            // and no clock of its own for Arco to set per track.
+            var t = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyTransportType,
+                                               mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+            var transport: UInt32 = 0
+            var tsize = UInt32(MemoryLayout<UInt32>.size)
+            if AudioObjectGetPropertyData(device, &t, 0, nil, &tsize, &transport) == noErr,
+               transport == kAudioDeviceTransportTypeAggregate || transport == kAudioDeviceTransportTypeAutoAggregate { return nil }
             return LocalOutput(id: uid, name: text)
         }
     }

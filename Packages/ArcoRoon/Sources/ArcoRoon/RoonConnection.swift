@@ -74,6 +74,19 @@ public final class RoonConnection: NSObject {
 
     public func start() { Task { await connect() } }
 
+    /// No line and no looking for a Core until start() again (Arco's Roon switch off, 22 Oct 2026). A discovery or a retry
+    /// still under way sees the new line number and ends.
+    public func stop() {
+        lineNumber += 1
+        heartbeat?.invalidate(); heartbeat = nil
+        socket?.cancel(with: .goingAway, reason: nil); socket = nil
+        registeredCore = nil
+        statusSubscribers = []; pairingSubscribers = []
+        let waiting = pending; pending = [:]
+        for (_, callback) in waiting { callback(nil, nil) }
+        state = .searching
+    }
+
     // MARK: - Requests to the Core
 
     /// A request; the callback receives every reply (CONTINUE and COMPLETE) as (name, body), and (nil, nil) when the

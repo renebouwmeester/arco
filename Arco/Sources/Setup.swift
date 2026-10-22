@@ -94,6 +94,8 @@ struct SetupList: View {
     var roonOptional = false
     /// This Mac is chosen: no driver, no microphone needed.
     var localOnly = false
+    /// Roon switched off in the menu: not in the list at all.
+    var roonShown = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -110,7 +112,8 @@ struct SetupList: View {
                      "To follow what plays and pass on Roon's buttons",
                      button: Self.title(app.access)) { setup.allowAutomation(app.bundleID, access: app.access) }
             }
-            if roonOptional {
+            if !roonShown {
+            } else if roonOptional {
                 item(done: true, "Roon (optional)", isPaired ? roonLine : "Only needed for Roon zones")
             } else {
                 item(done: isPaired, "Enabled in Roon", roonLine)

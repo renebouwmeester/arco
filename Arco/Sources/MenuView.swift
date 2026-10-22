@@ -18,14 +18,14 @@ struct MenuView: View {
 
     private var isPaired: Bool { if case .paired = model.connectionState { return true }; return false }
     /// A Roon zone is (or would be) the target: nothing else chosen.
-    private var roonNeeded: Bool { model.selectedRenderer == nil && model.selectedLocal == nil }
+    private var roonNeeded: Bool { model.roonOn && model.selectedRenderer == nil && model.selectedLocal == nil }
     private var macOK: Bool { model.selectedLocal != nil ? setup.musicReady : setup.macReady }
     /// Enabled in Roon before, and connecting again — after a start or an update (0.3.1, René: "Het rijtje goed te keuren
     /// is nu weg – lijkt zichzelf te hebben hersteld?"): the menu says it connects instead of showing the checklist, whose
     /// "Enabled in Roon" stood open for those seconds. Only if Roon really waits for Enable does the checklist return.
     private var reconnecting: Bool {
         if case .waitingForAuthorization = model.connectionState { return false }
-        return !isPaired && model.connection.wasPaired
+        return model.roonOn && !isPaired && model.connection.wasPaired
     }
 
     var body: some View {
@@ -41,7 +41,8 @@ struct MenuView: View {
             // Roon is only needed for a Roon zone (21 Oct 2026, René): with UPnP or This Mac chosen it's optional, and This
             // Mac needs no driver and no microphone either.
             if !(macOK && (!roonNeeded || isPaired || reconnecting)) {
-                SetupList(setup: setup, connection: model.connectionState, roonOptional: !roonNeeded, localOnly: model.selectedLocal != nil)
+                SetupList(setup: setup, connection: model.connectionState, roonOptional: !roonNeeded, localOnly: model.selectedLocal != nil,
+                          roonShown: model.roonOn)
             } else if reconnecting, roonNeeded {
                 Text(statusLine).font(.callout).foregroundStyle(.secondary)
             }
@@ -93,6 +94,7 @@ struct MenuView: View {
     static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
 
     private var statusLine: String {
+        guard model.roonOn else { return "" }
         switch model.connectionState {
         case .searching: return "Looking for Roon…"
         case .connecting(let name): return "Connecting to \(name)…"
@@ -105,11 +107,21 @@ struct MenuView: View {
     @ViewBuilder private var content: some View {
         sending
         Divider()
-        if isPaired {
+        // Roon, with its own switch (22 Oct 2026): off, the section is only this line.
+        HStack {
+            Text("Roon").font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            Toggle("Roon", isOn: Binding(get: { model.roonOn }, set: { model.setRoon($0) }))
+                .toggleStyle(.switch).controlSize(.mini).labelsHidden()
+        }
+        // Only when another target is chosen: for a Roon zone the checklist (or the line at the top) says it already.
+        if model.roonOn, !isPaired, !roonNeeded {
+            Text(statusLine).font(.callout).foregroundStyle(.secondary)
+        }
+        if model.roonOn, isPaired {
             if model.zones.isEmpty {
                 Text("Roon has no zones right now").font(.callout).foregroundStyle(.secondary)
             } else {
-                Text("Roon").font(.caption).foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(model.zones) { zone in
                         // Arco's zone shows what Arco sends (Roon's own line for an audio-input session lags behind).
