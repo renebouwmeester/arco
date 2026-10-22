@@ -20,10 +20,15 @@ struct UPnPRenderer: Identifiable, Equatable, Sendable {
     let id: String            // its UDN
     let name: String
     let host: String
-    let avTransport: URL
+    /// Its AVTransport (UPnP AV) — nil for a device that speaks only OpenHome.
+    let avTransport: URL?
     let avTransportType: String
     /// Where its description is (for the log line of what it can, see capabilities).
     let location: URL
+    /// OpenHome (22 Oct 2026, for Linn, Lumin and the like — first measured on the AudioPi with upmpdcli): its Playlist
+    /// service (a list of tracks in the renderer itself: Insert, SeekId, Id) and its Time service (the position).
+    struct OpenHome: Equatable, Sendable { let playlist: URL; let playlistType: String; let time: URL?; let timeType: String }
+    let openHome: OpenHome?
 
     /// Which renderers there are: an SSDP search (2.5 s), then each one's description.
     static func find() async -> [UPnPRenderer] {
@@ -46,16 +51,20 @@ struct UPnPRenderer: Identifiable, Equatable, Sendable {
         setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, socklen_t(MemoryLayout<UInt8>.size))
         var wait = timeval(tv_sec: 0, tv_usec: 250_000)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &wait, socklen_t(MemoryLayout<timeval>.size))
-        let query = Array(("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\n"
-                           + "ST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n").utf8)
+        // UPnP AV renderers, and OpenHome sources (they announce themselves by their Playlist service, not as MediaRenderer).
+        let queries = ["urn:schemas-upnp-org:device:MediaRenderer:1", "urn:av-openhome-org:service:Playlist:1"].map { st in
+            Array(("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\n" + "ST: \(st)\r\n\r\n").utf8)
+        }
         var address = sockaddr_in()
         address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         address.sin_family = sa_family_t(AF_INET)
         address.sin_port = UInt16(1900).bigEndian
         inet_pton(AF_INET, "239.255.255.250", &address.sin_addr)
         for _ in 0..<2 {
-            _ = withUnsafePointer(to: &address) { p in
-                p.withMemoryRebound(to: sockaddr.self, capacity: 1) { sendto(fd, query, query.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+            for query in queries {
+                _ = withUnsafePointer(to: &address) { p in
+                    p.withMemoryRebound(to: sockaddr.self, capacity: 1) { sendto(fd, query, query.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+                }
             }
         }
         var locations = Set<URL>()
@@ -86,13 +95,18 @@ struct UPnPRenderer: Identifiable, Equatable, Sendable {
         let maker = tag("manufacturer", in: xml) ?? ""
         if ["Sonos", "Signalyst", "Samsung", "LG Electronics", "Sony"].contains(where: { maker.localizedCaseInsensitiveContains($0) }) { return nil }
         let base = tag("URLBase", in: xml).flatMap(URL.init(string:)) ?? location
+        var avt: (URL, String)?, playlist: (URL, String)?, time: (URL, String)?
         for block in xml.components(separatedBy: "<service>").dropFirst() {
-            guard let type = tag("serviceType", in: block), type.contains(":service:AVTransport:"),
-                  let control = tag("controlURL", in: block), let url = URL(string: control, relativeTo: base)?.absoluteURL else { continue }
-            return UPnPRenderer(id: udn, name: name.replacingOccurrences(of: "&amp;", with: "&"), host: host, avTransport: url,
-                                avTransportType: type, location: location)
+            guard let type = tag("serviceType", in: block), let control = tag("controlURL", in: block),
+                  let url = URL(string: control, relativeTo: base)?.absoluteURL else { continue }
+            if type.contains(":service:AVTransport:") { avt = (url, type) }
+            if type.hasPrefix("urn:av-openhome-org:service:Playlist:") { playlist = (url, type) }
+            if type.hasPrefix("urn:av-openhome-org:service:Time:") { time = (url, type) }
         }
-        return nil
+        guard avt != nil || playlist != nil else { return nil }
+        return UPnPRenderer(id: udn, name: name.replacingOccurrences(of: "&amp;", with: "&"), host: host, avTransport: avt?.0,
+                            avTransportType: avt?.1 ?? "", location: location,
+                            openHome: playlist.map { OpenHome(playlist: $0.0, playlistType: $0.1, time: time?.0, timeType: time?.1 ?? "") })
     }
 
     /// What it can, in one line for the log (21 Oct 2026 — for testers far away, a Linn Klimax DSM first): its maker, whether
@@ -133,13 +147,19 @@ struct UPnPRenderer: Identifiable, Equatable, Sendable {
 
     /// An AVTransport action; the answer's body, or nil (logged).
     func avt(_ action: String, _ args: String = "") async -> String? {
+        guard let avTransport else { return nil }
+        return await soap(avTransport, avTransportType, action, "<InstanceID>0</InstanceID>" + args)
+    }
+
+    /// A SOAP action on one of its services; the answer's body, or nil (logged).
+    func soap(_ url: URL, _ type: String, _ action: String, _ args: String = "") async -> String? {
         let body = "<?xml version=\"1.0\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" "
-            + "s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body><u:\(action) xmlns:u=\"\(avTransportType)\">"
-            + "<InstanceID>0</InstanceID>\(args)</u:\(action)></s:Body></s:Envelope>"
-        var request = URLRequest(url: avTransport); request.timeoutInterval = 5
+            + "s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body><u:\(action) xmlns:u=\"\(type)\">"
+            + "\(args)</u:\(action)></s:Body></s:Envelope>"
+        var request = URLRequest(url: url); request.timeoutInterval = 5
         request.httpMethod = "POST"
         request.setValue("text/xml; charset=\"utf-8\"", forHTTPHeaderField: "Content-Type")
-        request.setValue("\"\(avTransportType)#\(action)\"", forHTTPHeaderField: "SOAPAction")
+        request.setValue("\"\(type)#\(action)\"", forHTTPHeaderField: "SOAPAction")
         request.httpBody = Data(body.utf8)
         guard let (data, response) = try? await URLSession.shared.data(for: request) else {
             Log.note("upnp: \(name) — \(action) got no answer"); return nil

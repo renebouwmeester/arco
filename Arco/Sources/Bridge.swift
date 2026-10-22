@@ -399,7 +399,9 @@ final class Bridge: ObservableObject {
         let s: Output
         switch target {
         case .roon(let zone): s = RoonOutput(connection: connection, zone: zone)
-        case .upnp(let renderer): s = UPnPOutput(renderer: renderer)
+        case .upnp(let renderer):
+            // OpenHome first when the renderer speaks it (its own playlist, gapless — Linn's way); otherwise UPnP AV.
+            if let oh = renderer.openHome { s = OpenHomeOutput(renderer: renderer, openHome: oh) } else { s = UPnPOutput(renderer: renderer) }
         case .local: return       // no session: the Music app plays to the DAC itself
         }
         s.onEvent = { [weak self] event in self?.roonEvent(event) }
