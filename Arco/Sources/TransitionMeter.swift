@@ -42,6 +42,11 @@ final class TransitionMeter {
     /// A change of track: the previous one's verdict now, and a new window.
     func begin(_ title: String, kind: Kind) {
         close()
+        // After a stop the listener starts something new (23 Oct 2026, Ropiee on a Verox: stop, ten seconds, then the next
+        // track — logged as a skip that "paused at the change"). That is a start, not a skip, and its pause is the restart.
+        var kind = kind
+        if stopped, kind == .skip { kind = .start }
+        stopped = false
         open = Open(title: title, kind: kind, from: rate?(), at: Date())
         // The pause can be written just before the change (Sky Bass: 30 ms before "next track").
         if kind != .start, let p = lastPause, Date().timeIntervalSince(p) < 1 { open?.signs.append(Self.pausedAtChange) }
@@ -57,12 +62,15 @@ final class TransitionMeter {
     func end() { close() }
 
     private var lastPause: Date?
+    /// The Music app stopped (not just paused) since the last change of track.
+    private var stopped = false
     /// Arco's own reasons to pause the Music app (a change of clock, switching on): such a pause isn't heard as one.
     private var lastOwn: Date?
 
     private func heard(_ line: String) {
         if (line.hasPrefix("clock:") && line.contains(" → ")) || line.hasPrefix("session: began") || line.hasPrefix("rate: back to") { lastOwn = Date() }
         if line.hasPrefix("music: paused"), lastOwn.map({ Date().timeIntervalSince($0) > 2.5 }) ?? true { lastPause = Date() }
+        if line.hasPrefix("music: stopped") { stopped = true }
         guard var o = open, !line.contains("transition:") else { return }
         // The Music app paused at the change itself (21 Oct 2026, Sky Bass: Apple's server answered 503, "Asset failed to
         // load", and the Music app paused "for an error") — Arco passes the pause on, but the change was not seamless.
