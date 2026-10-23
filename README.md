@@ -6,7 +6,7 @@ Arco takes what the Music app plays on your Mac and hands it to Roon as a live s
 title, artist, album and cover of each track. Roon does the rest: your zones, your DSP, your endpoints — including the
 ones that only speak RAAT.
 
-<p align="center"><img src="docs/menu.png" width="368" alt="Arco's menu: Send to Roon switched on, playing on the KEF LS60 zone at 96 kHz, with its volume, and the other Roon zones below"></p>
+<p align="center"><img src="docs/menu.png" width="368" alt="Arco's menu (0.5.0b2): Enable, the three outputs Local, Roon and UPnP, with UPnP switched on and the KEF LS60 chosen among the renderers on the network, then Open at Login, Show Sample Rate in Menu Bar, and the actions"></p>
 
 > **Status:** beta. It works well in daily use here; expect rough edges, and please report them.
 
