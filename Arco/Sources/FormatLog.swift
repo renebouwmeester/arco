@@ -353,14 +353,16 @@ final class FormatLog {
         if m.contains("mediaFormatinfo") {
             guard let khz = groups(#"asbdSampleRate = ([\d.]+) kHz"#)?.first.flatMap({ Double($0) }) else { return true }
             let rate = Int((khz * 1000).rounded())
-            guard let b = groups(#"sdBitDepth = (\d+) bit"#)?.first.flatMap({ Int($0) }) ?? (m.contains("high res lossless") ? 24 : nil) else { return true }
-            if giveBits(b, rate: rate, at: at, window: 3, quiet: quiet) || quiet || at < quietUntil { return true }
-            // No label beside it (Sequoia, see `ahead`): a lossless track loaded at this rate.
-            let format = groups(#"sdFormatID = (\w+)"#)?.first ?? "?"
+            let b = groups(#"sdBitDepth = (\d+) bit"#)?.first.flatMap({ Int($0) }) ?? (m.contains("high res lossless") ? 24 : nil)
+            if let b, giveBits(b, rate: rate, at: at, window: 3, quiet: quiet) { return true }
+            if quiet || at < quietUntil { return true }
+            // No label beside it (Sequoia, see `ahead`): a lossless track loaded at this rate. Not always with a bit depth or
+            // an sdFormatID (a second tester, 24 Oct 2026: "asbdFormatID = qlac, lossless, … asbdSampleRate = 44.1 kHz").
+            let format = groups(#"sdFormatID = (\w+)"#)?.first ?? groups(#"asbdFormatID = (\w+)"#)?.first ?? "?"
             guard Self.lossless.contains(format) || m.contains("lossless") else { return true }
             ahead.append(Entry(at: at, rate: rate, format: format))
             if ahead.count > 20 { ahead.removeFirst(ahead.count - 20) }
-            Log.note("format log: the Music app loaded a track at \(rate) Hz, \(b)-bit \(format) (mediaFormatinfo, no label)")
+            Log.note("format log: the Music app loaded a track at \(rate) Hz, \(b.map { "\($0)-bit " } ?? "")\(format) (mediaFormatinfo, no label)")
             return true
         }
         return false
