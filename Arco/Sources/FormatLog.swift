@@ -91,6 +91,14 @@ final class FormatLog {
     private var labelTitles: [String: String] = [:]
     private var labels: [String: Label] = [:]          // by title: the lossless label, the latest
     private var aacSeen: [String: Int] = [:]
+    // MARK: Ahead without a label (0.5.0b3, Sequoia)
+    // The Music app on macOS 15 writes none of the label lines, nor the ones that name the next track (Marco's log, 24 Oct
+    // 2026: no "Asset Log Mapping", no "fmtDescChangeNote", no "ITMPAVItemCount INIT"), and its "Creating AudioQueue" line
+    // came only at the change itself. But when it loaded the next track, 172 s ahead (17:34:32 for 17:37:24), it wrote
+    // "mediaFormatinfo '<private>' … sdFormatID = alac, high res lossless … sdBitDepth = 24 bit, asbdSampleRate = 96.0 kHz":
+    // the rate, without a title. Such a line with no label beside it, outside a quiet moment: the rate of a track loaded
+    // ahead — for a natural change, when the decoder's own line is missing (see rate).
+    private var ahead: [Entry] = []
     /// A lossless label arrived or changed (a track loaded ahead, or the one that plays switching to a better track).
     var onLabel: ((Label) -> Void)?
 
@@ -195,7 +203,7 @@ final class FormatLog {
     func stop() {
         process?.terminate()
         process = nil
-        entries = []
+        entries = []; ahead = []
         seenAny = false
         next = nil; titles = [:]; lengths = [:]
         labelTitles = [:]; labels = [:]; aacSeen = [:]
@@ -209,6 +217,7 @@ final class FormatLog {
     func forget(recent seconds: Double) {
         let since = Date().addingTimeInterval(-seconds)
         entries.removeAll { $0.at > since }
+        ahead.removeAll { $0.at > since }
         // The pause's line, taken for the next track's rate: undone (it is the track that plays).
         if var n = next, let at = n.rateAt, at > since {
             n.rate = nil; n.rateAt = nil; next = n
@@ -345,21 +354,31 @@ final class FormatLog {
             guard let khz = groups(#"asbdSampleRate = ([\d.]+) kHz"#)?.first.flatMap({ Double($0) }) else { return true }
             let rate = Int((khz * 1000).rounded())
             guard let b = groups(#"sdBitDepth = (\d+) bit"#)?.first.flatMap({ Int($0) }) ?? (m.contains("high res lossless") ? 24 : nil) else { return true }
-            giveBits(b, rate: rate, at: at, window: 3, quiet: quiet)
+            if giveBits(b, rate: rate, at: at, window: 3, quiet: quiet) || quiet || at < quietUntil { return true }
+            // No label beside it (Sequoia, see `ahead`): a lossless track loaded at this rate.
+            let format = groups(#"sdFormatID = (\w+)"#)?.first ?? "?"
+            guard Self.lossless.contains(format) || m.contains("lossless") else { return true }
+            ahead.append(Entry(at: at, rate: rate, format: format))
+            if ahead.count > 20 { ahead.removeFirst(ahead.count - 20) }
+            Log.note("format log: the Music app loaded a track at \(rate) Hz, \(b)-bit \(format) (mediaFormatinfo, no label)")
             return true
         }
         return false
     }
 
-    /// The bit depth to the newest lossless label at that rate, written at most `window` seconds before.
-    private func giveBits(_ b: Int, rate: Int, at: Date, window: TimeInterval, quiet: Bool) {
-        guard var l = labels.values.filter({ $0.rate == rate && at.timeIntervalSince($0.at) >= 0 && at.timeIntervalSince($0.at) < window }).max(by: { $0.at < $1.at }),
-              l.bits != b else { return }
+    /// The bit depth to the newest lossless label at that rate, written at most `window` seconds before. True when there
+    /// was such a label.
+    @discardableResult
+    private func giveBits(_ b: Int, rate: Int, at: Date, window: TimeInterval, quiet: Bool) -> Bool {
+        guard var l = labels.values.filter({ $0.rate == rate && at.timeIntervalSince($0.at) >= 0 && at.timeIntervalSince($0.at) < window }).max(by: { $0.at < $1.at })
+        else { return false }
+        guard l.bits != b else { return true }
         l.bits = b
         labels[l.title] = l
-        if quiet { return }
+        if quiet { return true }
         Log.note("label: \(l.title) — \(b)-bit")
         onLabel?(l)
+        return true
     }
 
     /// The lines about the next track (0.3.5). True when the message was one of them.
@@ -416,13 +435,17 @@ final class FormatLog {
     /// The rate for a change of track at `change` (see the top of this file). `current`: the device's rate now, for "the
     /// same format". Nil: the log can't say (AppleScript then).
     func rate(_ kind: Change, change: Date, previous: Date?, current: Int) async -> (rate: Int, how: String)? {
-        guard !unavailable, process != nil else { return nil }
+        guard !unavailable, process != nil else {
+            Log.note("format log: no answer — \(unavailable ? "not usable on this Mac" : "the log command isn't running")")
+            return nil
+        }
         let same = (current, Self.sameHow)
         switch kind {
         case .start:
             if let e = entries.last { return (e.rate, "the Music app's log, \(e.format)") }
             let until = change.addingTimeInterval(Self.wait)
             while Date() < until, entries.isEmpty { try? await Task.sleep(for: .milliseconds(100)) }
+            if entries.isEmpty { Log.note("format log: no line for the start — \(picture(change))") }
             return entries.last.map { ($0.rate, "the Music app's log, \($0.format)") }
         case .natural:
             // Not the lines of the previous track's own first seconds (9 Oct, The Theory of Everything: the start's own
@@ -431,6 +454,14 @@ final class FormatLog {
             if let e = entries.last(where: { $0.at <= change && $0.at > since }) {
                 return (e.rate, "the Music app's log, \(e.format) loaded ahead")
             }
+            // Sequoia (0.5.0b3): no decoder line, but the track's format when the Music app loaded it (see `ahead`).
+            if let a = ahead.last(where: { $0.at <= change && $0.at > since }) {
+                Log.note("format log: no decoder line for the change — \(picture(change, since: since))")
+                return (a.rate, "the Music app's mediaFormatinfo, \(a.format) loaded ahead")
+            }
+            // Marco's log, 24 Oct 2026 (0.5.0b2): a 96 kHz line 0.06 s before a natural change didn't count, and AppleScript
+            // read 44.1 — what the log held then, to see why.
+            Log.note("format log: nothing for the change — \(picture(change, since: since))")
             return seenAny ? same : nil
         case .skip:
             let until = change.addingTimeInterval(Self.wait)
@@ -442,7 +473,17 @@ final class FormatLog {
                 }
                 try? await Task.sleep(for: .milliseconds(100))
             }
+            Log.note("format log: no line for the skip — \(picture(change))")
             return nil   // not "the same": a skipped-to track can start in AAC and get its lossless queue only later
         }
+    }
+
+    /// What the log holds, in seconds from a change of track: for the notes above, when it has no answer.
+    private func picture(_ change: Date, since: Date? = nil) -> String {
+        func t(_ d: Date) -> String { String(format: "%+.2f s", d.timeIntervalSince(change)) }
+        let lines = entries.suffix(3).map { "\($0.rate) \($0.format) at \(t($0.at))" }.joined(separator: ", ")
+        let loaded = ahead.suffix(3).map { "\($0.rate) at \(t($0.at))" }.joined(separator: ", ")
+        return "lines \(entries.count)\(lines.isEmpty ? "" : " (\(lines))"), loaded ahead \(ahead.count)"
+            + "\(loaded.isEmpty ? "" : " (\(loaded))")\(since.map { since in since > .distantPast.addingTimeInterval(60) ? ", counting from \(t(since))" : "" } ?? ""), seen any: \(seenAny)"
     }
 }
