@@ -5,6 +5,7 @@
 //
 //   transition: Folie À Deux — natural, 96 → 96 kHz — seamless
 //   transition: Moon River — skip, 96 → 44.1 kHz — the clock corrected at the track's start
+//   transition: California Dreamin' — natural, 44.1 → 96 kHz — seamless on Arco's side; the endpoint switches to the new rate
 import Foundation
 
 @MainActor
@@ -91,7 +92,13 @@ final class TransitionMeter {
         guard let o = open else { return }
         open = nil
         let khz = { (r: Double?) in r.map { MenuBarLabel.short($0) } ?? "?" }
-        let verdict = o.signs.isEmpty ? "seamless" : o.signs.joined(separator: "; ")
+        // Another rate is never seamless at the endpoint (a tester, 24 Oct 2026, 0.5.0b2: "still a hiccup between tracks with
+        // different sample rates" — the log said "seamless"): Roon opens a new stream and the DAC switches rate, which most
+        // DACs do with a short mute. The verdict speaks for Arco's side only and says so.
+        let andereRate = o.from != nil && rate?() != nil && Int(o.from!) != Int(rate!()!)
+        let verdict = o.signs.isEmpty
+            ? (andereRate ? "seamless on Arco's side; the endpoint switches to the new rate" : "seamless")
+            : o.signs.joined(separator: "; ")
         Log.note("transition: \(o.title) — \(o.kind.rawValue), \(khz(o.from)) → \(khz(rate?())) kHz — \(verdict)")
     }
 }
