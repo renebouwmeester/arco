@@ -446,7 +446,8 @@ final class Bridge: ObservableObject {
                 let deadline = Date().addingTimeInterval(Double(max(0, follows.atMs - self.roonPositionNow())) / 1000 + 15)
                 // A UPnP renderer that ran dry at the frozen point (it knows its position only to the second): at once.
                 while Date() < deadline, self.session === s, self.roonSlice == follows.number,
-                      self.roonPositionNow() < follows.atMs - 250, !(self.session?.isStarved ?? false) {
+                      self.roonPositionNow() < follows.atMs - 250, !(self.session?.isStarved ?? false),
+                      self.roonDoneRun != follows.number {
                     try? await Task.sleep(for: .milliseconds(50))
                 }
                 Log.note("run \(slice.number): \(self.peer) at \(self.roonPositionNow()) ms of run \(follows.number) (frozen at \(follows.atMs))")
@@ -591,11 +592,25 @@ final class Bridge: ObservableObject {
                 playNow(next, why: "the renderer stopped at the end of slice \(n)")
                 return
             }
+            // Roon stopped in a frozen run with the next one written: that run is done (see .failed).
+            if let n = Int(track), n == roonSlice, store?.perTrack != true, let st = store?.status, st.number > n {
+                roonDoneRun = n
+                Log.note("roon: stopped in run \(n), frozen before run \(st.number) — run \(st.number) at once")
+                return
+            }
             // Only a stop of the run being written: a UPnP renderer stops when a skip drops the run it played (21 Oct
             // 2026, the Ellipse) — that is Arco's doing, and the Music app must play on.
             guard Int(track) == store?.status?.number else { return }
             if phase == .playing, !own { ownUntil = Date().addingTimeInterval(3); source.pause() }
         case .failed(let track, let reason):
+            // An error at the end of a frozen run, with the next run already written (Marco, 25 Oct 2026: MediaError at
+            // 180 s of a run frozen at 181 s — Arco waited out its 15 s for Roon to reach the change): that run is done,
+            // the next one goes on now.
+            if let n = Int(track), n == roonSlice, store?.perTrack != true, let st = store?.status, st.number > n {
+                roonDoneRun = n
+                Log.note("roon: \(reason) in run \(n), frozen before run \(st.number) — run \(st.number) at once")
+                return
+            }
             // Only an error of the slice being written counts: a slice dropped at a skip answers a 404 to Roon's last
             // fetches, and Roon may report that as a MediaError before the new slice's play arrives.
             guard Int(track) == roonSlice, Int(track) == store?.status?.number, phase != .starting else { return }
@@ -661,7 +676,7 @@ final class Bridge: ObservableObject {
         clockPauseTask = Task { @MainActor [weak self] in
             // The change of clock can come just after the pause (at most 0.12 s, see the pause below).
             try? await Task.sleep(for: .milliseconds(600))
-            guard let self, !Task.isCancelled, abs(pausedAt.timeIntervalSince(self.rateChangedAt)) < 2 else { return }
+            guard let self, !Task.isCancelled, self.clockChanging(around: pausedAt) else { return }
             for _ in 0..<12 {
                 try? await Task.sleep(for: .milliseconds(500))
                 guard !Task.isCancelled, self.music.state == .paused else { return }
@@ -760,7 +775,7 @@ final class Bridge: ObservableObject {
                 pendingPause = Task { @MainActor [weak self] in
                     try? await Task.sleep(for: .milliseconds(200))
                     guard let self, !Task.isCancelled, self.source.state != .playing, self.phase == .playing else { return }
-                    if Date().timeIntervalSince(self.rateChangedAt) < 2 {
+                    if self.clockChanging() {
                         Log.note("pause: Music changes the clock — \(peer) plays on")
                         return
                     }
@@ -957,6 +972,7 @@ final class Bridge: ObservableObject {
         let back = fromStart && music.position() < 3
         let playing = music.state == .playing
         Log.note("clock: \(track.title) — \(rate) Hz (\(how)): \(target == now ? "the Music app set Arco to it itself" : "Arco \(Int(now)) → \(Int(target)) Hz")\(back ? ", from the start" : "")")
+        clockSwitchAt = Date()
         ownUntil = Date().addingTimeInterval(3)
         formats.quiet(for: 2.5)   // the queue the Music app sets up again now is about this track (see FormatLog)
         // Before the pause, which can take the Music app two seconds (17:08:39): from now on Roon gets nothing past the
@@ -1020,6 +1036,16 @@ final class Bridge: ObservableObject {
     /// keeps it fed; at the edge of the stream it starves (it counts on, without sound).
     private static let supplyMs = 5000
     private var rateChangedAt = Date.distantPast
+    /// When Arco itself began a change of clock (setClock). On Sequoia the device took the new rate 1.6 s after the order
+    /// (Marco, 25 Oct 2026, 10:41:08.853 → 10:41:10.419): the Music app's pause came in between, wasn't taken for a change
+    /// of clock, and went on to Roon — which then failed on the run (MediaError) and left 20 s of silence.
+    private var clockSwitchAt = Date.distantPast
+    /// A frozen run Roon is done with (it reached the end, stopped, or failed there): the run after it goes on at once.
+    private var roonDoneRun: Int?
+    /// A change of clock in the last few seconds, by the device's word or Arco's own order.
+    private func clockChanging(around t: Date = Date()) -> Bool {
+        abs(t.timeIntervalSince(rateChangedAt)) < 2 || (t.timeIntervalSince(clockSwitchAt) >= 0 && t.timeIntervalSince(clockSwitchAt) < 4)
+    }
     /// The last time a Roon error got a second try.
     private var lastRetry = Date.distantPast
 

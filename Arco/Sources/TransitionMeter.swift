@@ -24,6 +24,7 @@ final class TransitionMeter {
     /// What Arco's own log says when something is heard (a sign may be expected for a kind: a new run at a skip is not one).
     private static let signs: [(String, String)] = [
         ("once more, a new run", "Roon had an error — a new run"),
+        ("frozen before run", "Roon stopped short of the change — the next run at once"),
         ("failed:", "Arco failed"),
         ("correcting, from the track's start", "the clock corrected at the track's start"),
         ("didn't play again", "the Music app stalled after a change of clock"),
