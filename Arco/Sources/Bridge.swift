@@ -846,6 +846,7 @@ final class Bridge: ObservableObject {
                     // De klok volgt nu pas (René, 25 Oct 2026: California Dreamin' speelde op 44.1 — followClock gebeurt bij
                     // een skip alleen als Music speelt, en tijdens een pauze speelde hij niet).
                     if let t = source.track { followClock(t, kind: .skip) }
+                    meter.hervat()
                 } else if phase == .paused {
                     // Roon goes on at once (after a short pause it doesn't even re-open RAAT). Holding Music back until Roon
                     // played (c579c99) got in the way — during a change of clock above all.

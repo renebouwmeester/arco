@@ -56,6 +56,20 @@ final class TransitionMeter {
         // The pause can be written just before the change (Sky Bass: 30 ms before "next track").
         if kind != .start, let p = lastPause, Date().timeIntervalSince(p) < 1 { open?.signs.append(Self.pausedAtChange) }
         closing?.cancel()
+        // Tijdens een pauze begint het venster pas bij het hervatten (hervat()): anders sloot het vóór de klok gewisseld was.
+        if gepauzeerd { return }
+        sluitOver20()
+    }
+
+    /// Het hervatten na een skip tijdens een pauze: nu begint het venster van twintig seconden.
+    func hervat() {
+        guard let o = open else { return }
+        open = Open(title: o.title, kind: o.kind, from: o.from, at: Date(), signs: o.signs, renderer: o.renderer)
+        sluitOver20()
+    }
+
+    private func sluitOver20() {
+        closing?.cancel()
         closing = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(20))
             guard !Task.isCancelled else { return }
