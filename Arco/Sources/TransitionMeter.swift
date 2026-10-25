@@ -94,7 +94,7 @@ final class TransitionMeter {
         // When the endpoint took the change — when it was heard: per track the renderer's own report of the new slice;
         // for Roon (a new run at another rate) its "Playing" for the run.
         if o.renderer == nil, line.contains(o.title),
-           line.hasPrefix("renderer: slice") || (line.hasPrefix("play run") && line.hasSuffix("answered Playing")) { o.renderer = Date() }
+           line.hasPrefix("renderer: slice") || (line.hasPrefix("play run") && (line.hasSuffix("answered Playing") || line.hasSuffix("answered Unpaused"))) { o.renderer = Date() }
         // The Music app paused at the change itself (21 Oct 2026, Sky Bass: Apple's server answered 503, "Asset failed to
         // load", and the Music app paused "for an error") — Arco passes the pause on, but the change was not seamless.
         if line.hasPrefix("music: paused"), o.kind != .start, lastPause.map({ Date().timeIntervalSince($0) < 0.5 }) == true,
