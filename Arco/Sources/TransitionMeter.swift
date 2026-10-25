@@ -45,12 +45,12 @@ final class TransitionMeter {
     }
 
     /// A change of track: the previous one's verdict now, and a new window.
-    func begin(_ title: String, kind: Kind) {
+    func begin(_ title: String, kind: Kind, gepauzeerd: Bool = false) {
         close()
         // After a stop the listener starts something new (23 Oct 2026, Ropiee on a Verox: stop, ten seconds, then the next
         // track — logged as a skip that "paused at the change"). That is a start, not a skip, and its pause is the restart.
         var kind = kind
-        if stopped, kind == .skip { kind = .start }
+        if stopped || gepauzeerd, kind == .skip { kind = .start }   // ook een skip tijdens een pauze: de pauze was van de luisteraar
         stopped = false
         open = Open(title: title, kind: kind, from: rate?(), at: Date())
         // The pause can be written just before the change (Sky Bass: 30 ms before "next track").

@@ -743,7 +743,8 @@ final class Bridge: ObservableObject {
                 // A skip while Roon is paused (Marco, 25 Oct 2026: "a few seconds of the previously paused song before the new
                 // one starts"): the old run is dropped — Roon mustn't let it be heard again on resuming.
                 if !natural, phase == .paused { nieuweRunNaPauze = true }
-                meter.begin(track.title, kind: natural ? .natural : .skip)
+                // Tijdens een pauze is een skip een nieuwe start bij het hervatten — de pauze was van de luisteraar.
+                meter.begin(track.title, kind: natural ? .natural : .skip, gepauzeerd: phase == .paused)
                 defer { declareNext() }   // per track: the next one, now that this one is known
                 if state == .playing { followClock(track, kind: natural ? .natural : .skip) }
                 let coverMissing = !lastInfoHadCover
@@ -842,6 +843,9 @@ final class Bridge: ObservableObject {
                     // replaces it; until then Roon stays paused.
                     Log.note("resume: a new run follows the skip — \(peer) not resumed on the old one")
                     phase = .playing
+                    // De klok volgt nu pas (René, 25 Oct 2026: California Dreamin' speelde op 44.1 — followClock gebeurt bij
+                    // een skip alleen als Music speelt, en tijdens een pauze speelde hij niet).
+                    if let t = source.track { followClock(t, kind: .skip) }
                 } else if phase == .paused {
                     // Roon goes on at once (after a short pause it doesn't even re-open RAAT). Holding Music back until Roon
                     // played (c579c99) got in the way — during a change of clock above all.
