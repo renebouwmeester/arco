@@ -486,6 +486,7 @@ final class Bridge: ObservableObject {
             guard self.session === s else { return }
             if answer == "Playing" || answer == "Unpaused" {
                 self.roonSlice = slice.number
+                self.nieuweRunNaPauze = false
                 self.nowPlaying = Self.lines(slice.info)
                 self.roonPositionMs = 0; self.roonTimeAt = Date()
                 self.marks.removeAll { $0.number < slice.number }
@@ -509,6 +510,8 @@ final class Bridge: ObservableObject {
     }
 
     private var lastHeartbeat: String?
+    /// A skip happened while Roon was paused: the run Roon holds was dropped, a new one is on its way (see the resume).
+    private var nieuweRunNaPauze = false
 
     private func startHeartbeat() {
         heartbeat?.invalidate()
@@ -737,6 +740,9 @@ final class Bridge: ObservableObject {
                     Log.note("length: \(track.title) — \(ms / 1000) s, from the Music app's log")
                 }
                 if track.durationMs <= 0 { refreshLength(of: track.id) }
+                // A skip while Roon is paused (Marco, 25 Oct 2026: "a few seconds of the previously paused song before the new
+                // one starts"): the old run is dropped — Roon mustn't let it be heard again on resuming.
+                if !natural, phase == .paused { nieuweRunNaPauze = true }
                 meter.begin(track.title, kind: natural ? .natural : .skip)
                 defer { declareNext() }   // per track: the next one, now that this one is known
                 if state == .playing { followClock(track, kind: natural ? .natural : .skip) }
@@ -830,6 +836,12 @@ final class Bridge: ObservableObject {
                         guard let self, self.phase == .playing, self.source.state == .playing else { return }
                         self.roonControl("play")
                     }
+                } else if phase == .paused, nieuweRunNaPauze {
+                    // A skip during the pause: Roon still holds the dropped run — resuming it would play its buffered tail
+                    // first (Marco: "like a hose: after beer, a few sips of beer before the water"). The new run's own play
+                    // replaces it; until then Roon stays paused.
+                    Log.note("resume: a new run follows the skip — \(peer) not resumed on the old one")
+                    phase = .playing
                 } else if phase == .paused {
                     // Roon goes on at once (after a short pause it doesn't even re-open RAAT). Holding Music back until Roon
                     // played (c579c99) got in the way — during a change of clock above all.
