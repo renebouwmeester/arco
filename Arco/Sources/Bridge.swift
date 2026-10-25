@@ -507,12 +507,18 @@ final class Bridge: ObservableObject {
         return roonPositionMs + Int(Date().timeIntervalSince(roonTimeAt) * 1000)
     }
 
+    private var lastHeartbeat: String?
+
     private func startHeartbeat() {
         heartbeat?.invalidate()
         heartbeat = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, let status = self.store?.status else { return }
-                Log.note("run \(status.number): \(status.writtenMs) ms written; \(self.peer) in run \(self.roonSlice) at \(self.roonPositionMs) ms")
+                // Only when something moved (0.5.0b5: a paused Roon zone wrote the same line every ten seconds for minutes).
+                let regel = "run \(status.number): \(status.writtenMs) ms written; \(self.peer) in run \(self.roonSlice) at \(self.roonPositionMs) ms"
+                guard regel != self.lastHeartbeat else { return }
+                self.lastHeartbeat = regel
+                Log.note(regel)
             }
         }
     }
@@ -690,7 +696,10 @@ final class Bridge: ObservableObject {
                 // Eight, not two: what is left of the first track of a session is estimated from Music's position at the
                 // start, and that was 6 s off (21:27:53, "The End"). Taking a natural transition for a skip would drop the
                 // run, and Roon would lose the end of the track; a skip in the last seconds is merely heard a little later.
-                let left = store.remainingInTrack ?? 0
+                // Per track, a full slice already goes on in the declared next one ("1 full — on in 2"): the change is on time,
+                // and what remains is the next track's length, not this one's (0.5.0b5: "197.2 s were left" at a natural end).
+                let left = store.perTrack && store.writingTitle == track.title && store.writingDeclared ? 0 : (store.remainingInTrack ?? 0)
+                let rest = left < 0.05 ? "on time" : String(format: "%.1f s were left", left)
                 // 0.3.5: the Music app named this track as the next one — a natural change within fifteen seconds of
                 // the end too (the estimate of the first track of a session was 6 s off); further from it, it is still a
                 // skip (to the next track: Roon should follow at once, not after its lag).
@@ -700,7 +709,8 @@ final class Bridge: ObservableObject {
                 let said = source === music ? formats.transition(to: track.title) : nil
                 let natural = said ?? (left < 8 || (named != nil && left < 15))
                 if let said, said != (left < 8) {
-                    Log.note("next track: \(track.title) — the Music app says \(said ? "a natural change" : "a jump") (\(String(format: "%.1f", left)) s were left by the estimate)")
+                    let wat = said ? "a natural change, earlier than the estimate (\(rest); a seek?)" : "a jump (\(rest) by the estimate)"
+                    Log.note("next track: \(track.title) — the Music app says \(wat)")
                 }
                 let info = makeInfo(track)
                 // No length in Music's notification (a streamed track, 7 Oct 22:06: the Aria counted as one second, and
@@ -719,7 +729,7 @@ final class Bridge: ObservableObject {
                 if let mark = store.startTrack(.init(info: info, durationMs: track.durationMs), newRun: !natural) {
                     marks.append((mark.number, mark.ms, info))
                     if coverMissing { lateCover(track) }
-                    Log.note("next track: \(track.title) — goes on in run \(mark.number) at \(mark.ms) ms (\(String(format: "%.1f", left)) s were left)")
+                    Log.note("next track: \(track.title) — goes on in run \(mark.number) at \(mark.ms) ms (\(rest))")
                 } else {
                     if store.perTrack {
                         // Per track every track is a slice of its own: what matters is whether it was declared ahead (the
@@ -728,9 +738,9 @@ final class Bridge: ObservableObject {
                             : (store.writingTitle == track.title && store.writingDeclared)
                                 || store.queuedSlice.map({ Self.lines($0.info)?.title == track.title }) == true
                                 ? "its declared slice" : "not declared ahead, a slice after the last"
-                        Log.note("next track: \(track.title) — \(how) (\(String(format: "%.1f", left)) s were left)")
+                        Log.note("next track: \(track.title) — \(how) (\(rest))")
                     } else {
-                        Log.note("next track: \(track.title) — \(natural ? "begins the next run" : "a skip, a new run at once") (\(String(format: "%.1f", left)) s were left)")
+                        Log.note("next track: \(track.title) — \(natural ? "begins the next run" : "a skip, a new run at once") (\(rest))")
                     }
                     if coverMissing { lateCover(track) }
                 }

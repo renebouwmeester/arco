@@ -6,13 +6,16 @@
 //   transition: Folie À Deux — natural, 96 → 96 kHz — seamless
 //   transition: Moon River — skip, 96 → 44.1 kHz — the clock corrected at the track's start
 //   transition: California Dreamin' — natural, 44.1 → 96 kHz — seamless on Arco's side; the endpoint switches to the new rate
+//
+// The verdict comes twenty seconds after the change, so it says when the change was (0.5.0b5, René, 25 Oct 2026: it read as
+// if the change came then, 14 s after the renderer had taken it): the Music app's moment, and per track the renderer's.
 import Foundation
 
 @MainActor
 final class TransitionMeter {
     enum Kind: String { case start, natural, skip }
 
-    private struct Open { let title: String; let kind: Kind; let from: Double?; let at: Date; var signs: [String] = [] }
+    private struct Open { let title: String; let kind: Kind; let from: Double?; let at: Date; var signs: [String] = []; var renderer: Date? }
     private var open: Open?
     private var closing: Task<Void, Never>?
     /// The rate now, for the verdict line.
@@ -73,6 +76,8 @@ final class TransitionMeter {
         if line.hasPrefix("music: paused"), lastOwn.map({ Date().timeIntervalSince($0) > 2.5 }) ?? true { lastPause = Date() }
         if line.hasPrefix("music: stopped") { stopped = true }
         guard var o = open, !line.contains("transition:") else { return }
+        // Per track: the renderer took the new slice (its own report) — when the change was heard.
+        if o.renderer == nil, line.hasPrefix("renderer: slice"), line.contains(o.title) { o.renderer = Date() }
         // The Music app paused at the change itself (21 Oct 2026, Sky Bass: Apple's server answered 503, "Asset failed to
         // load", and the Music app paused "for an error") — Arco passes the pause on, but the change was not seamless.
         if line.hasPrefix("music: paused"), o.kind != .start, lastPause.map({ Date().timeIntervalSince($0) < 0.5 }) == true,
@@ -99,6 +104,9 @@ final class TransitionMeter {
         let verdict = o.signs.isEmpty
             ? (andereRate ? "seamless on Arco's side; the endpoint switches to the new rate" : "seamless")
             : o.signs.joined(separator: "; ")
-        Log.note("transition: \(o.title) — \(o.kind.rawValue), \(khz(o.from)) → \(khz(rate?())) kHz — \(verdict)")
+        let klok = DateFormatter(); klok.dateFormat = "HH:mm:ss.SSS"
+        let wanneer = o.renderer.map { "changed \(klok.string(from: o.at)), the renderer took it at \(klok.string(from: $0))" }
+            ?? "changed \(klok.string(from: o.at))"
+        Log.note("transition: \(o.title) — \(o.kind.rawValue), \(khz(o.from)) → \(khz(rate?())) kHz — \(verdict) (\(wanneer))")
     }
 }
