@@ -28,6 +28,7 @@
 // one, declared ahead (the bridge sets it as the renderer's next) — nothing lost, nothing twice, gapless at one rate. A
 // declared slice at another rate (the next track's label) takes nothing at the old rate: the clock changes first. No
 // next declared: the music waits in the overflow and becomes a slice when the Music app names the track.
+import AudioToolbox
 import Foundation
 import Network
 
@@ -52,6 +53,16 @@ final class SliceStore: @unchecked Sendable {
         var rateSince = 0
         /// The track it begins with.
         let info: [String: Any]
+        /// FLAC to the renderer (26 Oct 2026, René: "dat FLAC pad maar eens opzetten" — wifi to the Mu-so as the test): the
+        /// PCM above is encoded as the renderer fetches it, by the system's own encoder (ExtAudioFile, bit-exact), into a file
+        /// that grows like the WAV does. Only what is released goes in (never the held-back tail a pause may still cut), and
+        /// only once the renderer has asked for it (a change of rate before that converts the PCM in place).
+        var flacFile: URL?
+        var flacRef: ExtAudioFileRef?
+        var flacReader: FileHandle?
+        var flacFrames = 0
+        var flacDone = false
+        var isFlac: Bool { flacFile != nil }
         /// Set when this run follows another one at a change of rate: that run's number and where it was frozen (ms).
         /// The bridge plays this run when Roon gets there; without it, at once.
         let follows: (number: Int, atMs: Int)?
@@ -64,14 +75,16 @@ final class SliceStore: @unchecked Sendable {
         /// Nothing past this frame goes to Roon (0.3.2): a change of clock sends the track back to its start, and what the
         /// Music app played of it at the old rate must not reach Roon — the pause it needs can take two seconds (17:08:39).
         var limit: Int?
-        init(number: Int, path: String, rate: Double, frames: Int, info: [String: Any], follows: (Int, Int)?, directory: URL) {
+        init(number: Int, path: String, rate: Double, frames: Int, info: [String: Any], follows: (Int, Int)?, directory: URL, flac: Bool = false) {
             self.number = number; self.path = path; self.rate = rate; self.frames = max(1, frames)
             self.info = info; self.follows = follows
             file = directory.appendingPathComponent("run-\(number).pcm")
             FileManager.default.createFile(atPath: file.path, contents: nil)
             writer = try? FileHandle(forWritingTo: file)
             reader = try? FileHandle(forReadingFrom: file)
+            if flac { flacFile = directory.appendingPathComponent("run-\(number).flac") }
         }
+        var flacSize: Int { flacFile.flatMap { (try? FileManager.default.attributesOfItem(atPath: $0.path)[.size]) as? Int } ?? 0 }
         var isFull: Bool { written >= frames }
         /// The rate has held `seconds` (the Music app switches the device to a track's own rate 0.2–5.5 s after a start;
         /// 7 Oct 21:53: four seconds).
@@ -112,6 +125,9 @@ final class SliceStore: @unchecked Sendable {
     private var counter = 0
     /// One slice per track, each with its exact length (UPnP renderers; see the top of this file).
     var perTrack = false
+    /// The slices as FLAC instead of WAV (per track only; see Slice.flacFile).
+    var flac = false
+    private var ext: String { flac && perTrack ? "flac" : "wav" }
     /// The highest rate the renderer takes (Sonos: 48 kHz). Above it, the music is converted down as it is written, and
     /// the slices are at the lower rate — see Downsampler.
     var maxRate: Double?
@@ -228,8 +244,8 @@ final class SliceStore: @unchecked Sendable {
             remove(q.slice); queued = nil
         }
         counter += 1
-        let s = Slice(number: counter, path: "/stream/\(session)-\(counter).wav", rate: rate, frames: frames,
-                      info: t.info, follows: nil, directory: directory)
+        let s = Slice(number: counter, path: "/stream/\(session)-\(counter).\(ext)", rate: rate, frames: frames,
+                      info: t.info, follows: nil, directory: directory, flac: flac && perTrack)
         s.declared = true
         slices[s.number] = s
         queued = (s, t)
@@ -531,6 +547,7 @@ final class SliceStore: @unchecked Sendable {
                 if perTrack, c.isFull, c.rate == rate {
                     // Full: on in the declared next slice, or the overflow until the next track is known.
                     c.closed = true
+                    if c.isFlac { for r in c.readers { pump(c, r) } }
                     current = nil
                     if queued != nil { moveToQueued(); Log.note("runs: \(c.number) full — on in \(current?.number ?? 0)") }
                     else { Log.note("runs: \(c.number) full — nothing declared after it, the overflow") }
@@ -562,6 +579,7 @@ final class SliceStore: @unchecked Sendable {
                     // A change of rate (or three hours at one rate): freeze the run where it is — Roon still plays its
                     // end — and go on in a new run at the new rate, with the track that plays now.
                     c.closed = true
+                    if c.isFlac { for r in c.readers { pump(c, r) } }
                     current = nil
                     if perTrack, let q = queued { remove(q.slice); queued = nil }
                     // Back to the start of the track (TrackClock): the next run takes over where the track began.
@@ -611,8 +629,8 @@ final class SliceStore: @unchecked Sendable {
         // be 6.2 GB — the header overflowed and Arco crashed (21:32:25). So about two hours at 96, one at 192; a full run
         // simply goes on in the next one.
         let frames = perTrack ? max(1, Int(Double(p.track.durationMs) / 1000 * rate)) : Self.capacity(rate)
-        let s = Slice(number: counter, path: "/stream/\(session)-\(counter).wav", rate: rate,
-                      frames: frames, info: p.track.info, follows: p.follows, directory: directory)
+        let s = Slice(number: counter, path: "/stream/\(session)-\(counter).\(ext)", rate: rate,
+                      frames: frames, info: p.track.info, follows: p.follows, directory: directory, flac: flac && perTrack)
         slices[s.number] = s
         current = s
         track = p.track
@@ -641,6 +659,9 @@ final class SliceStore: @unchecked Sendable {
         s.readers = []
         try? s.writer?.close(); try? s.reader?.close()
         try? FileManager.default.removeItem(at: s.file)
+        if let ref = s.flacRef { ExtAudioFileDispose(ref); s.flacRef = nil }
+        try? s.flacReader?.close()
+        if let f = s.flacFile { try? FileManager.default.removeItem(at: f) }
         slices[s.number] = nil
     }
 
@@ -656,6 +677,7 @@ final class SliceStore: @unchecked Sendable {
     func serve(path: String, _ connection: NWConnection, range: String?, headOnly: Bool) -> Bool {
         lock.lock(); defer { lock.unlock() }
         guard let s = slices.values.first(where: { $0.path == path }) else { return false }
+        if s.isFlac { serveFlac(s, connection, range: range, headOnly: headOnly); return true }
         let total = 44 + s.bytes
         var from = 0
         if let range, let match = range.range(of: #"bytes=(\d+)-"#, options: .regularExpression) {
@@ -697,6 +719,7 @@ final class SliceStore: @unchecked Sendable {
     /// Under the lock: one chunk (at most 256 KB) of the slice to the reader; at its end, close.
     private func pump(_ s: Slice, _ r: Reader) {
         guard !r.busy else { return }
+        if s.isFlac { pumpFlac(s, r); return }
         if r.offset >= s.bytes { r.connection.cancel(); return }
         // Held back: the last 0.4 s of an open run (see trimTail); a frozen run gives all it has.
         let held = s.closed ? 0 : max(0, Int(Self.holdBackSeconds * s.rate) - released)
@@ -729,6 +752,145 @@ final class SliceStore: @unchecked Sendable {
             r.busy = false
             if error == nil { self.pump(s, r) }
         })
+    }
+
+    // MARK: - FLAC (see Slice.flacFile)
+
+    /// Under the lock: what is released of the PCM goes into the FLAC; a closed slice is finished (the file gets its
+    /// length in the header, a reader its end).
+    private func encodeFlac(_ s: Slice) {
+        guard let file = s.flacFile, !s.flacDone, s.headerSent, let rd = s.reader else { return }
+        let held = s.closed || s !== current ? 0 : max(0, Int(Self.holdBackSeconds * s.rate) - released)
+        let target = min(max(0, s.written - held), s.limit ?? Int.max, s.frames)
+        if s.flacRef == nil {
+            var doel = AudioStreamBasicDescription(mSampleRate: s.rate, mFormatID: kAudioFormatFLAC, mFormatFlags: 3,
+                mBytesPerPacket: 0, mFramesPerPacket: 4608, mBytesPerFrame: 0, mChannelsPerFrame: 2, mBitsPerChannel: 0, mReserved: 0)
+            var bron = AudioStreamBasicDescription(mSampleRate: s.rate, mFormatID: kAudioFormatLinearPCM,
+                mFormatFlags: kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked, mBytesPerPacket: UInt32(Self.bytesPerFrame),
+                mFramesPerPacket: 1, mBytesPerFrame: UInt32(Self.bytesPerFrame), mChannelsPerFrame: 2, mBitsPerChannel: 24, mReserved: 0)
+            var ref: ExtAudioFileRef?
+            guard ExtAudioFileCreateWithURL(file as CFURL, kAudioFileFLACType, &doel, nil, AudioFileFlags.eraseFile.rawValue, &ref) == noErr,
+                  let ref, ExtAudioFileSetProperty(ref, kExtAudioFileProperty_ClientDataFormat, UInt32(MemoryLayout.size(ofValue: bron)), &bron) == noErr
+            else { Log.note("runs: \(s.number) — FLAC encoder didn't start"); s.flacDone = true; return }
+            s.flacRef = ref
+            s.flacReader = try? FileHandle(forReadingFrom: file)
+            Log.note("runs: \(s.number) — FLAC at \(Int(s.rate)) Hz")
+        }
+        guard let ref = s.flacRef else { return }
+        while s.flacFrames < target {
+            let n = min(target - s.flacFrames, 16_384)
+            try? rd.seek(toOffset: UInt64(s.flacFrames * Self.bytesPerFrame))
+            guard let d = try? rd.read(upToCount: n * Self.bytesPerFrame), d.count >= Self.bytesPerFrame else { break }
+            let k = d.count / Self.bytesPerFrame
+            let st = d.withUnsafeBytes { p -> OSStatus in
+                var abl = AudioBufferList(mNumberBuffers: 1, mBuffers: AudioBuffer(mNumberChannels: 2, mDataByteSize: UInt32(k * Self.bytesPerFrame),
+                                                                                   mData: UnsafeMutableRawPointer(mutating: p.baseAddress)))
+                return ExtAudioFileWrite(ref, UInt32(k), &abl)
+            }
+            if st != noErr { Log.note("runs: \(s.number) — FLAC write \(st)"); break }
+            s.flacFrames += k
+        }
+        if s.closed || s.flacFrames >= s.frames {
+            ExtAudioFileDispose(ref); s.flacRef = nil; s.flacDone = true
+            Log.note("runs: \(s.number) — FLAC done, \(s.flacSize / 1024) KB for \(s.flacFrames * Self.bytesPerFrame / 1024) KB of PCM")
+        }
+    }
+
+    /// Under the lock: a GET (or HEAD) for a FLAC slice. While it grows there is no length (the renderer reads until the
+    /// end of the connection); a Range into a growing slice gets "bytes from-*/*". Once it is done, an ordinary file.
+    private func serveFlac(_ s: Slice, _ connection: NWConnection, range: String?, headOnly: Bool) {
+        s.headerSent = true
+        encodeFlac(s)
+        let size = s.flacSize
+        var from = 0
+        if let range, let match = range.range(of: #"bytes=(\d+)-"#, options: .regularExpression) {
+            from = Int(range[match].filter(\.isNumber)) ?? 0
+        }
+        var http: String
+        if s.flacDone {
+            from = min(size, from)
+            http = from > 0
+                ? "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes \(from)-\(size - 1)/\(size)\r\nContent-Length: \(size - from)\r\n"
+                : "HTTP/1.1 200 OK\r\nContent-Length: \(size)\r\n"
+        } else {
+            http = from > 0 ? "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes \(from)-*/*\r\n" : "HTTP/1.1 200 OK\r\n"
+        }
+        http += "Content-Type: audio/flac\r\nAccept-Ranges: bytes\r\ntransferMode.dlna.org: Streaming\r\n"
+            + "contentFeatures.dlna.org: DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000\r\nConnection: close\r\n\r\n"
+        Log.note("runs: \(s.number) — FLAC asked from \(from)\(s.flacDone ? " (done, \(size) bytes)" : " (growing)")")
+        let head = Data(http.utf8)
+        if headOnly { connection.send(content: head, completion: .contentProcessed { _ in connection.cancel() }); return }
+        let r = Reader(connection: connection, offset: from)
+        let host = Self.host(connection)
+        for old in s.readers where host != nil && Self.host(old.connection) == host { old.connection.cancel() }
+        s.readers.removeAll { host != nil && Self.host($0.connection) == host }
+        s.readers.append(r)
+        while s.readers.count > 8 { s.readers.removeFirst().connection.cancel() }
+        r.busy = true
+        connection.stateUpdateHandler = { [weak self, weak s, weak r] state in
+            guard let self, let s, let r else { return }
+            switch state {
+            case .failed, .cancelled:
+                self.lock.lock(); s.readers.removeAll { $0 === r }
+                Log.note("runs: \(s.number) — FLAC reader gone at byte \(r.offset) of \(s.flacSize)\(s.flacDone ? " (done)" : "")")
+                self.lock.unlock()
+            default: break
+            }
+        }
+        connection.send(content: head, completion: .contentProcessed { [weak self, weak s] _ in
+            guard let self, let s else { return }
+            self.lock.lock(); defer { self.lock.unlock() }
+            r.busy = false
+            self.pump(s, r)
+        })
+    }
+
+    /// Under the lock: the next chunk of a FLAC slice to a reader — what is encoded so far; at the end of a done slice, close.
+    private func pumpFlac(_ s: Slice, _ r: Reader) {
+        encodeFlac(s)
+        let size = s.flacSize
+        if s.flacDone, r.offset >= size { r.connection.cancel(); return }
+        guard r.offset < size, let fr = s.flacReader else {
+            // Nothing new yet: look again shortly (the encoder writes a packet of 4608 frames at a time).
+            if !r.waiting {
+                r.waiting = true
+                DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.05) { [weak self, weak s] in
+                    guard let self, let s else { return }
+                    self.lock.lock(); defer { self.lock.unlock() }
+                    r.waiting = false
+                    self.pump(s, r)
+                }
+            }
+            return
+        }
+        let count = min(262_144, size - r.offset)
+        r.lastSend = Date()
+        try? fr.seek(toOffset: UInt64(r.offset))
+        guard var data = try? fr.read(upToCount: count), !data.isEmpty else { return }
+        // The header (26 Oct 2026, the Mu-so: "didn't start playing"): while it writes, the system's encoder leaves the
+        // STREAMINFO block empty — 38 zero bytes after "fLaC", filled in only when the file is finished (the music itself is
+        // in place from byte 100). Arco knows all of it: it goes into what the renderer reads.
+        if !s.flacDone, r.offset < 42 {
+            let kop = Self.flacStreamInfo(rate: s.rate, frames: s.frames)
+            for i in max(4, r.offset)..<min(42, r.offset + data.count) { data[data.startIndex + i - r.offset] = kop[i - 4] }
+        }
+        r.busy = true
+        r.offset += data.count
+        r.connection.send(content: data, completion: .contentProcessed { [weak self, weak s] error in
+            guard let self, let s else { return }
+            self.lock.lock(); defer { self.lock.unlock() }
+            r.busy = false
+            if error == nil { self.pump(s, r) }
+        })
+    }
+
+    /// Bytes 4–41 of a FLAC file: the STREAMINFO block (its header and 34 bytes) as the system's encoder writes it when it
+    /// finishes — blocks of 4608 frames, frame sizes unknown, 2 channels at 24 bit, the length of the track, no MD5.
+    static func flacStreamInfo(rate: Double, frames: Int) -> [UInt8] {
+        var b: [UInt8] = [0x00, 0x00, 0x00, 0x22, 0x12, 0x00, 0x12, 0x00, 0, 0, 0, 0, 0, 0]
+        let v = (UInt64(rate) << 44) | (UInt64(1) << 41) | (UInt64(23) << 36) | (UInt64(frames) & ((UInt64(1) << 36) - 1))
+        for i in 0..<8 { b.append(UInt8((v >> (8 * UInt64(7 - i))) & 0xff)) }
+        return b + [UInt8](repeating: 0, count: 16)
     }
 
     private static func host(_ connection: NWConnection) -> String? {

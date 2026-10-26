@@ -322,8 +322,10 @@ final class UPnPOutput: Output {
         // fills a large buffer from a file that grows only as fast as the music (22 Oct 2026: more than 10 s), and a new
         // SetAVTransportURI after a "timeout" started its buffering over — it never played. Up to 30 s then.
         let until = Date().addingTimeInterval(30)
+        var gezien = ""
         while Date() < until {
             let state = UPnPRenderer.value("CurrentTransportState", in: await renderer.avt("GetTransportInfo"))
+            if let state, state != gezien { gezien = state; Log.note("upnp: \(renderer.name) after Play — \(state)") }
             if state == "PLAYING" { lastState = "PLAYING"; startPolling(); return "Playing" }
             if state == "STOPPED" || state == "NO_MEDIA_PRESENT", Date() > until.addingTimeInterval(-25) { break }
             try? await Task.sleep(for: .milliseconds(250))
@@ -409,7 +411,7 @@ final class UPnPOutput: Output {
             + "xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\"><item id=\"arco\" parentID=\"0\" restricted=\"1\">"
             + "<dc:title>\(title)</dc:title><dc:creator>\(artist)</dc:creator><upnp:artist>\(artist)</upnp:artist>"
             + "<upnp:album>\(album)</upnp:album>\(art)<upnp:class>object.item.audioItem.musicTrack</upnp:class>"
-            + "<res protocolInfo=\"http-get:*:audio/wav:DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000\">\(UPnPRenderer.escape(url))</res>"
+            + "<res protocolInfo=\"http-get:*:\(url.hasSuffix(".flac") ? "audio/flac" : "audio/wav"):DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000\">\(UPnPRenderer.escape(url))</res>"
             + "</item></DIDL-Lite>"
     }
 }

@@ -293,6 +293,8 @@ final class Bridge: ObservableObject {
         if case .upnp(let r) = target { s.perTrack = r.openHome != nil || !Self.runsOnly.contains(r.id) } else { s.perTrack = false }
         if case .upnp(let r) = target, !s.perTrack { Log.note("upnp: \(r.name) refused SetNext before — the runs, one stream per rate") }
         if case .upnp(let r) = target { s.maxRate = r.maxRate; s.peer = "the renderer" }
+        // FLAC to UPnP renderers (26 Oct 2026, a test: `defaults write <Arco> UPnPFLAC -bool YES`).
+        s.flac = UserDefaults.standard.bool(forKey: "UPnPFLAC")
         s.onSliceStarted = { [weak self] slice in self?.sliceStarted(slice) }
         store = s
         storeHolder.set(s)
