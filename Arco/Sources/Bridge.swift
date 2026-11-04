@@ -1270,8 +1270,11 @@ final class Bridge: ObservableObject {
     private func overflowed() {
         guard source === spotify, phase == .playing, source.state == .playing, let store, let track = source.track,
               track.durationMs > 0 else { return }
-        let left = track.durationMs - Int(source.position() * 1000)
-        guard left > 2000 else { return }   // its end: the next track (or the repeat) comes by itself
+        // Near its start or its end: Spotify went on (the next track, or the same one again) and its word comes by itself —
+        // 3 Nov 2026, 17:33:51: at a repeat Spotify was at 0 s already, and the rest of the track was taken as 190 s.
+        let at = source.position()
+        let left = track.durationMs - Int(at * 1000)
+        guard at > 3, left > 2000 else { return }
         Log.note("spotify: \(track.title) goes on past its slice — \(left / 1000) s left, a slice after the last")
         store.startTrack(.init(info: makeInfo(track), durationMs: left), newRun: false)
     }
