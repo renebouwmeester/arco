@@ -34,6 +34,9 @@ final class TransitionMeter {
         ("begins the next run", "a new run at the change (another rate)"),
         // Per track (UPnP): a natural change the renderer didn't have as its next — it stops in between.
         ("not declared ahead", "the next track wasn't declared ahead — the renderer stopped in between"),
+        // OpenHome: the renderer ran out of music at a natural change (4 Nov 2026: the Klimax buffered at a next set too late,
+        // and the verdict still said seamless).
+        ("— Buffering", "the renderer ran dry (Buffering)"),
     ]
 
     static let pausedAtChange = "the Music app paused at the change (often a track that failed to load)"
@@ -103,8 +106,8 @@ final class TransitionMeter {
         }
         for (sign, what) in Self.signs where line.contains(sign) {
             // A new run belongs to a start or a skip; at a natural change it is the silence of another rate (accepted, but
-            // said). A correction at a skip or a start comes before Roon plays: not heard.
-            if o.kind != .natural, sign == "begins the next run" || sign == "correcting, from the track's start" { continue }
+            // said). A correction at a skip or a start comes before Roon plays: not heard. A renderer buffers a new stream there.
+            if o.kind != .natural, sign == "begins the next run" || sign == "correcting, from the track's start" || sign == "— Buffering" { continue }
             if !o.signs.contains(what) { o.signs.append(what) }
         }
         open = o
