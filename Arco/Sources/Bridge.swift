@@ -484,6 +484,12 @@ final class Bridge: ObservableObject {
             // The run before it (frozen, or cut) goes now: its waiting downloader in Roon would hold the zone's bandwidth.
             self.store?.forget(before: slice.number)
             self.ownUntil = Date().addingTimeInterval(3)
+            // Per track, a slice that goes on from the one before it gets here only when the renderer couldn't go on in it by
+            // itself: a new start, never gapless — said for the transition meter (4 Nov 2026, 18:52:30: the Klimax buffered
+            // 2 s between its polls, and the verdict said seamless).
+            if self.store?.perTrack == true, let follows = slice.follows {
+                Log.note("run \(slice.number): a new start after slice \(follows.number), not gapless")
+            }
             var answer = await s.play(track: String(slice.number), url: url, info: slice.info)
             Log.note("play run \(slice.number) (\(Self.lines(slice.info)?.title ?? "?")): \(s.name) answered \(answer)")
             // A MediaError for a run of a running session (9 Oct 20:27:10, a skip: Roon still closing the dropped run
