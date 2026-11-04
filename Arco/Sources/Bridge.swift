@@ -442,6 +442,10 @@ final class Bridge: ObservableObject {
         Task { @MainActor in
             // Follows a run Roon never got (cut 0.2 s into a start, when the rate changed at once): nothing to wait for.
             if let follows = slice.follows, self.roonSlice == follows.number {
+                if self.source === self.spotify, self.store?.perTrack == true {
+                    if await self.setLateNext(slice, url: url, on: s) { return }
+                    Log.note("run \(slice.number): not declared ahead in time — the renderer stops in between")
+                }
                 // Wait until Roon is a quarter of a second before the point of the change (at most the time it still has
                 // to play there, plus some slack).
                 let deadline = Date().addingTimeInterval(Double(max(0, follows.atMs - self.roonPositionNow())) / 1000 + 15)
@@ -592,7 +596,9 @@ final class Bridge: ObservableObject {
             guard current(track) else { return }
             // Per track: the renderer reached the end of a slice nothing was set after — the next one at once, if there is one.
             // (A slice that follows another one is played by sliceStarted itself, when the renderer runs dry.)
-            if store?.perTrack == true, let n = Int(track), let next = store?.slice(after: n), next.written > 0, next.declared {
+            // Also one set as its next after it began (setLateNext) that the renderer didn't go on in by itself.
+            if store?.perTrack == true, let n = Int(track), let next = store?.slice(after: n), next.written > 0,
+               next.declared || next.number <= nextSent {
                 playNow(next, why: "the renderer stopped at the end of slice \(n)")
                 return
             }
@@ -760,7 +766,8 @@ final class Bridge: ObservableObject {
                         let how = !natural ? "a skip, a new slice at once"
                             : (store.writingTitle == track.title && store.writingDeclared)
                                 || store.queuedSlice.map({ Self.lines($0.info)?.title == track.title }) == true
-                                ? "its declared slice" : "not declared ahead, a slice after the last"
+                                ? "its declared slice"
+                                : source === spotify ? "a slice after the last (Spotify names no next track)" : "not declared ahead, a slice after the last"
                         Log.note("next track: \(track.title) — \(how) (\(rest))")
                     } else {
                         Log.note("next track: \(track.title) — \(natural ? "begins the next run" : "a skip, a new run at once") (\(rest))")
@@ -1277,6 +1284,18 @@ final class Bridge: ObservableObject {
         guard at > 3, left > 2000 else { return }
         Log.note("spotify: \(track.title) goes on past its slice — \(left / 1000) s left, a slice after the last")
         store.startTrack(.init(info: makeInfo(track), durationMs: left), newRun: false)
+    }
+
+    /// Spotify names no next track, but its new one begins seconds before the renderer gets there (it plays ~6 s behind,
+    /// 3 Nov 2026 on the Klimax): set as the renderer's next now, the slice is gone on in by itself — gapless, instead of a
+    /// stop at the end of the slice before it and a new start (0.5–3 s of silence at every change). False: not in time.
+    private func setLateNext(_ slice: SliceStore.Slice, url: String, on s: Output) async -> Bool {
+        guard !s.isStarved, nextSent < slice.number, store?.isCurrent(slice) == true else { return false }
+        let was = nextSent
+        nextSent = slice.number   // from now on a stop of the renderer plays it at once (see .stopped)
+        guard await s.setNext(track: String(slice.number), url: url, info: slice.info) else { nextSent = was; return false }
+        Log.note("next: slice \(slice.number) (\(Self.lines(slice.info)?.title ?? "?")) set as the renderer's next — after it began")
+        return true
     }
 
     /// A slice to the renderer at once (it stopped with nothing after it).
