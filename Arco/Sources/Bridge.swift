@@ -294,6 +294,7 @@ final class Bridge: ObservableObject {
         if case .upnp(let r) = target, !s.perTrack { Log.note("upnp: \(r.name) refused SetNext before — the runs, one stream per rate") }
         if case .upnp(let r) = target { s.maxRate = r.maxRate; s.peer = "the renderer" }
         s.onSliceStarted = { [weak self] slice in self?.sliceStarted(slice) }
+        s.onOverflow = { [weak self] in self?.overflowed() }
         store = s
         storeHolder.set(s)
         server.setStore(s)
@@ -1241,6 +1242,19 @@ final class Bridge: ObservableObject {
         Log.note("renderer: slice \(n) — \(nowPlaying?.title ?? "?")")
         declareNext()
         sendNext()
+    }
+
+    /// A slice filled with nothing declared after it while Spotify still plays the same track: its length was off (a seek
+    /// back, or a wrong position at the start). Spotify names no next track, so without this the renderer stopped and the
+    /// music waited in the overflow until the next one (3 Nov 2026, 17:03:30: 23 s of silence on the Klimax). The rest of
+    /// the track becomes the slice after the last — the renderer plays it when it gets there.
+    private func overflowed() {
+        guard source === spotify, phase == .playing, source.state == .playing, let store, let track = source.track,
+              track.durationMs > 0 else { return }
+        let left = track.durationMs - Int(source.position() * 1000)
+        guard left > 2000 else { return }   // its end: the next track (or the repeat) comes by itself
+        Log.note("spotify: \(track.title) goes on past its slice — \(left / 1000) s left, a slice after the last")
+        store.startTrack(.init(info: makeInfo(track), durationMs: left), newRun: false)
     }
 
     /// A slice to the renderer at once (it stopped with nothing after it).

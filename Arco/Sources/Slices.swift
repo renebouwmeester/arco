@@ -125,6 +125,8 @@ final class SliceStore: @unchecked Sendable {
     /// Called (on the main queue) when a run begins: the bridge plays it in Roon — at once, or when Roon reaches the point
     /// where the run before it was frozen.
     var onSliceStarted: ((Slice) -> Void)?
+    /// Called (on the main queue) when a slice is full with nothing declared after it (per track).
+    var onOverflow: (() -> Void)?
 
     init(directory: URL) {
         self.directory = directory
@@ -533,7 +535,11 @@ final class SliceStore: @unchecked Sendable {
                     c.closed = true
                     current = nil
                     if queued != nil { moveToQueued(); Log.note("runs: \(c.number) full — on in \(current?.number ?? 0)") }
-                    else { Log.note("runs: \(c.number) full — nothing declared after it, the overflow") }
+                    else {
+                        Log.note("runs: \(c.number) full — nothing declared after it, the overflow")
+                        let callback = onOverflow
+                        DispatchQueue.main.async { callback?() }
+                    }
                     continue
                 }
                 if c.rate != rate, !c.headerSent {
