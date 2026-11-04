@@ -112,7 +112,9 @@ final class SliceStore: @unchecked Sendable {
     private var trackStart = 0
     /// A new run, beginning with the next sound: its first track, and what it follows (at a change of rate).
     private var pendingRun: (track: Track, follows: (Int, Int)?)?
-    private var overflow = Data()
+    private var overflow = Data() { didSet { if overflow.isEmpty { overflowHeard = false } } }
+    /// The overflow holds sound (until then it keeps at most a second of silence, see write).
+    private var overflowHeard = false
     private var overflowRate: Double = 0
     private var gate: Gate = .waitForSound
     private var counter = 0
@@ -640,9 +642,17 @@ final class SliceStore: @unchecked Sendable {
                 begin(rate: rate)
                 continue
             }
-            // No run to write to yet (the first track isn't announced): keep the music, up to half a minute.
+            // No run to write to yet (the first track isn't announced): keep the music, up to half a minute — but no more than a
+            // second of silence before it (4 Nov 2026, 23:04–23:37: Spotify sat silent for half an hour after a slice filled,
+            // without a word, and the next track's slice began with the 30 s of silence kept here).
             if overflowRate != rate { overflow = Data(); overflowRate = rate }
-            overflow.append(data.prefix(count * Self.bytesPerFrame))
+            let chunk = data.prefix(count * Self.bytesPerFrame)
+            if overflowHeard || !chunk.allSatisfy({ $0 == 0 }) {
+                overflowHeard = true
+                overflow.append(chunk)
+            } else if overflow.count < Int(rate) * Self.bytesPerFrame {
+                overflow.append(chunk)
+            }
             let cap = Int(rate) * 30 * Self.bytesPerFrame
             if overflow.count > cap { overflow = overflow.suffix(cap) }
             count = 0
