@@ -13,6 +13,11 @@ final class SpotifyWatcher: PlayerSource {
     var onChange: ((SourceState, SourceTrack?, Bool) -> Void)?
     let preferredRate: Double? = 44_100
     private var observer: NSObjectProtocol?
+    /// Spotify on repeat-one plays the same track again without a new id, so `update` sees no change and the bridge never
+    /// starts a new track (per-track mode then fills its slice and the renderer stops). Near the track's end we check the
+    /// position: if it wrapped back to the start, the same track plays again and counts as a new one.
+    private var repeatCheck: Timer?
+    private var checkFrom: (position: Double, at: Date)?
 
     init() {
         observer = DistributedNotificationCenter.default().addObserver(
@@ -61,6 +66,29 @@ final class SpotifyWatcher: PlayerSource {
         self.state = state
         self.track = track
         onChange?(state, track, changed)
+        watchForRepeat()
+    }
+
+    private func watchForRepeat() {
+        repeatCheck?.invalidate(); repeatCheck = nil; checkFrom = nil
+        guard Bridge.spotifyEnabled, state == .playing, let track, track.durationMs > 0 else { return }
+        let at = position()
+        let wait = max(1, Double(track.durationMs) / 1000 - at + 1.5)
+        checkFrom = (at, Date())
+        repeatCheck = Timer.scheduledTimer(withTimeInterval: wait, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkRepeat() }
+        }
+    }
+
+    private func checkRepeat() {
+        guard state == .playing, let track, track.durationMs > 0, let from = checkFrom else { return }
+        let now = position()
+        let expected = from.position + Date().timeIntervalSince(from.at) - Double(track.durationMs) / 1000
+        if expected > 0, abs(now - expected) < 3 {
+            Log.note(String(format: "spotify: %@ plays again (repeat) — at %.1f s", track.title, now))
+            onChange?(state, track, true)
+        }
+        watchForRepeat()
     }
 
     func position() -> Double {
