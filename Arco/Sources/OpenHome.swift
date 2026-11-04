@@ -63,9 +63,11 @@ final class OpenHomeOutput: Output {
         return "Timeout"
     }
 
-    /// The next slice after the one that plays: the renderer goes on in it by itself, gapless.
-    func setNext(track: String, url: String, info: JSON) async -> Bool {
-        guard let id = await insert(after: currentID, url: url, info: info) else { return false }
+    /// The next slice after the one that plays (or after `after`, a next itself — the playlist takes any order): the renderer
+    /// goes on in it by itself, gapless.
+    func setNext(track: String, url: String, info: JSON, after: String?) async -> Bool {
+        let afterID = after.flatMap { a in tracks.first { $0.value == a }?.key } ?? currentID
+        guard let id = await insert(after: afterID, url: url, info: info) else { return false }
         tracks[id] = track
         return true
     }

@@ -665,7 +665,11 @@ final class SliceStore: @unchecked Sendable {
         // As long as a WAV can be: its length is a 32-bit field. Three hours fit at 44.1 and 48 kHz; at 96 kHz they would
         // be 6.2 GB — the header overflowed and Arco crashed (21:32:25). So about two hours at 96, one at 192; a full run
         // simply goes on in the next one.
-        let frames = perTrack ? max(1, Int(Double(p.track.durationMs) / 1000 * rate)) : Self.capacity(rate)
+        // Per track, what waited in the overflow is the end of the track before it (its slice filled a moment early): this
+        // slice is that much longer, so that it ends where its own track does. Without it the gap grew at every change —
+        // Spotify's tracks ran half a second longer than it said (4 Nov 2026) — until a slice of the last 2 s was cut.
+        let waiting = perTrack && overflowRate == rate ? overflow.count / Self.bytesPerFrame : 0
+        let frames = perTrack ? max(1, Int(Double(p.track.durationMs) / 1000 * rate)) + waiting : Self.capacity(rate)
         let s = Slice(number: counter, path: "/stream/\(session)-\(counter).wav", rate: rate,
                       frames: frames, info: p.track.info, follows: p.follows, directory: directory)
         slices[s.number] = s

@@ -441,13 +441,20 @@ final class Bridge: ObservableObject {
         let url = "http://\(address):\(server.port)\(slice.path)"
         Task { @MainActor in
             // Follows a run Roon never got (cut 0.2 s into a start, when the rate changed at once): nothing to wait for.
-            if let follows = slice.follows, self.roonSlice == follows.number {
+            // Per track it can follow one the renderer has as its next and doesn't play yet (the last 2 s of a track, 4 Nov
+            // 2026, 18:32): as good as playing — a new start would cut it off.
+            let ahead = slice.follows.map { self.store?.perTrack == true && $0.number > self.roonSlice && $0.number <= self.nextSent } ?? false
+            if let follows = slice.follows, self.roonSlice == follows.number || ahead {
                 if self.source === self.spotify, self.store?.perTrack == true {
                     let late = await self.setLateNext(slice, url: url, on: s)
                     // The end of the slice before it, held back until now (Slice.holdTail): the renderer has its next — or won't.
                     self.store?.releaseTail(follows.number)
                     if late { return }
                     Log.note("run \(slice.number): not declared ahead in time — the renderer stops in between")
+                }
+                // Not in it yet: first until it is (at most 30 s).
+                for _ in 0..<300 where self.session === s && self.roonSlice < follows.number && self.store?.isCurrent(slice) == true {
+                    try? await Task.sleep(for: .milliseconds(100))
                 }
                 // Wait until Roon is a quarter of a second before the point of the change (at most the time it still has
                 // to play there, plus some slack).
@@ -1252,7 +1259,7 @@ final class Bridge: ObservableObject {
         nextSent = q.number
         let url = "http://\(address):\(server.port)\(q.path)"
         Task { @MainActor in
-            let ok = await s.setNext(track: String(q.number), url: url, info: q.info)
+            let ok = await s.setNext(track: String(q.number), url: url, info: q.info, after: nil)
             Log.note("next: slice \(q.number) (\(Self.lines(q.info)?.title ?? "?")) set as the renderer's next\(ok ? "" : " — refused")")
             // Refused: this renderer gets the runs from its next start on (remembered); this session goes on slice by slice,
             // each one played when the renderer stopped at the end of the one before (a short gap).
@@ -1299,7 +1306,8 @@ final class Bridge: ObservableObject {
               let before = slice.follows?.number, store?.keepTail(before) == true else { return false }
         let was = nextSent
         nextSent = slice.number   // from now on a stop of the renderer plays it at once (see .stopped)
-        guard await s.setNext(track: String(slice.number), url: url, info: slice.info) else { nextSent = was; return false }
+        // After the slice before it, which may be a next itself still (OpenHome takes that; UPnP AV doesn't, and refuses).
+        guard await s.setNext(track: String(slice.number), url: url, info: slice.info, after: String(before)) else { nextSent = was; return false }
         Log.note("next: slice \(slice.number) (\(Self.lines(slice.info)?.title ?? "?")) set as the renderer's next — after it began")
         return true
     }

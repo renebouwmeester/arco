@@ -335,7 +335,9 @@ final class UPnPOutput: Output {
     /// UPnP has no new track information for what plays: the renderer keeps showing the run's first track.
     func updateInfo(track: String, info: JSON) async {}
 
-    func setNext(track: String, url: String, info: JSON) async -> Bool {
+    func setNext(track: String, url: String, info: JSON, after: String?) async -> Bool {
+        // One next only: never behind a next that doesn't play yet (it would take its place).
+        if let after, after != self.track { return false }
         tracks[url] = track
         let meta = Self.didl(url: url, info: info)
         return await renderer.avt("SetNextAVTransportURI", "<NextURI>\(UPnPRenderer.escape(url))</NextURI><NextURIMetaData>\(UPnPRenderer.escape(meta))</NextURIMetaData>") != nil
