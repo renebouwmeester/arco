@@ -18,6 +18,8 @@ final class SpotifyWatcher: PlayerSource {
     /// position: if it wrapped back to the start, the same track plays again and counts as a new one.
     private var repeatCheck: Timer?
     private var checkFrom: (position: Double, at: Date)?
+    /// This track played again at least once (repeat-one, most likely): the bridge declares it ahead as its own next.
+    private(set) var looped = false
 
     init() {
         observer = DistributedNotificationCenter.default().addObserver(
@@ -65,6 +67,7 @@ final class SpotifyWatcher: PlayerSource {
         guard changed || state != self.state else { return }
         self.state = state
         self.track = track
+        if changed { looped = false }
         onChange?(state, track, changed)
         watchForRepeat()
     }
@@ -86,6 +89,7 @@ final class SpotifyWatcher: PlayerSource {
         let expected = from.position + Date().timeIntervalSince(from.at) - Double(track.durationMs) / 1000
         if expected > 0, abs(now - expected) < 3 {
             Log.note(String(format: "spotify: %@ plays again (repeat) — at %.1f s", track.title, now))
+            looped = true
             onChange?(state, track, true)
         }
         watchForRepeat()
@@ -94,6 +98,11 @@ final class SpotifyWatcher: PlayerSource {
     func position() -> Double {
         guard Self.isRunning, let text = AppleScript.run(#"tell application "Spotify" to get player position"#)?.stringValue else { return 0 }
         return Double(text.replacingOccurrences(of: ",", with: ".")) ?? 0
+    }
+
+    /// Spotify's repeat is on — one or all, its AppleScript doesn't say which.
+    var repeating: Bool {
+        Self.isRunning && AppleScript.run(#"tell application "Spotify" to get repeating"#)?.booleanValue == true
     }
 
     func cover() -> SourceCover? {

@@ -1153,6 +1153,7 @@ final class Bridge: ObservableObject {
     /// The next track the Music app named: its slice, declared ahead, cut at its length from the Music app's log — and the
     /// drift of the current cut taken into it, so the cut after it falls on the track's boundary again (Basso's way).
     private func declareNext() {
+        if source === spotify { return declareRepeat() }
         guard isUPnP, let store, store.perTrack, session != nil, source === music, let n = formats.next,
               let title = n.title, let ms = n.lengthMs, ms > 0, let playing = music.track, title != playing.title,
               store.writingTitle == playing.title else { return }
@@ -1212,6 +1213,24 @@ final class Bridge: ObservableObject {
         let info = AudioInputSession.info(title: title, artist: album?.artist ?? playing.artist, album: album?.album ?? playing.album, imageURL: image)
         guard let s = store.declare(.init(info: info, durationMs: ms), rate: rate, frames: frames) else { return }
         Log.note(String(format: "next: slice %d declared — %@, %d Hz, %d s, cut %+.2f s", s.number, title, Int(rate), ms / 1000, drift))
+        sendNext()
+    }
+
+    /// Spotify names no next track. On repeat, once this track played again (repeat-one, most likely — its `repeating` doesn't
+    /// tell one from all), the same track is declared ahead as its own next: gapless from the second time on. A different
+    /// track after all is simply a change the declared slice didn't fit (a short gap, as without it).
+    private func declareRepeat() {
+        guard isUPnP, let store, store.perTrack, session != nil, spotify.looped, let t = spotify.track, t.durationMs > 0,
+              store.writingTitle == t.title, store.queuedSlice == nil, spotify.repeating else { return }
+        // The drift of the current cut taken into the next one, so the cut after it falls on the wrap again (see declareNext).
+        var drift = 0.0
+        if let left = store.writingLeft {
+            drift = max(-2, min(2, (Double(t.durationMs) / 1000 - spotify.position()) - left))
+        }
+        let rate = spotify.preferredRate ?? capture.rate
+        guard let s = store.declare(.init(info: makeInfo(t), durationMs: t.durationMs), rate: rate,
+                                    frames: Int(max(1, Double(t.durationMs) / 1000 + drift) * rate)) else { return }
+        Log.note(String(format: "next: slice %d declared — %@ again (repeat), %d s, cut %+.2f s", s.number, t.title, t.durationMs / 1000, drift))
         sendNext()
     }
 
