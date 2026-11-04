@@ -61,6 +61,12 @@ final class SliceStore: @unchecked Sendable {
         var written = 0
         var readers: [Reader] = []
         var closed = false            // no more writing (frozen at a change of rate, or dropped)
+        /// Per track: closed with no next slice the renderer knows of — its last seconds stay held back until there is one
+        /// (keepTail, releaseTail). The Klimax looks for its next track the moment it has all of the current one: a next set
+        /// after that played after a second of Buffering, or not at all — it played the slice it had again (4 Nov 2026).
+        var holdTail = false
+        /// The held-back end is kept for a next on its way (keepTail): the deadline of holdBackTail leaves it.
+        var tailKept = false
         /// Nothing past this frame goes to Roon (0.3.2): a change of clock sends the track back to its start, and what the
         /// Music app played of it at the old rate must not reach Roon — the pause it needs can take two seconds (17:08:39).
         var limit: Int?
@@ -147,12 +153,13 @@ final class SliceStore: @unchecked Sendable {
 
     /// A new track. `newRun`: a skip or the first track — a new run with the next sound. Otherwise it goes on in the
     /// current run, and the answer is where (run number, ms) — for the bridge to update Roon's track information there.
+    /// `fill` (per track, Spotify): a slice less than a second short of full is filled to its end first (see below).
     @discardableResult
-    func startTrack(_ t: Track, newRun: Bool) -> (number: Int, ms: Int)? {
+    func startTrack(_ t: Track, newRun: Bool, fill: Bool = false) -> (number: Int, ms: Int)? {
         lock.lock(); defer { lock.unlock() }
         track = t
         restartAtTrackStart = false   // a restart belongs to the track it was asked for
-        if perTrack { return startTrackPerTrack(t, newRun: newRun) }
+        if perTrack { return startTrackPerTrack(t, newRun: newRun, fill: fill) }
         if !newRun, let c = current, !c.closed {
             // Room for this track in the run? If not (an hour at 192 kHz), the next run begins here, between two tracks —
             // the way a change of rate does — instead of in the middle of a track when the run is full.
@@ -176,7 +183,7 @@ final class SliceStore: @unchecked Sendable {
     }
 
     /// Under the lock: a new track, per track. The declared one (the music goes on in it by itself), or a skip.
-    private func startTrackPerTrack(_ t: Track, newRun: Bool) -> (number: Int, ms: Int)? {
+    private func startTrackPerTrack(_ t: Track, newRun: Bool, fill: Bool) -> (number: Int, ms: Int)? {
         let title = Self.title(t.info)
         if !newRun {
             // Declared, and the writing is in it already (or will be when the current one fills — less than 3 s left).
@@ -194,11 +201,20 @@ final class SliceStore: @unchecked Sendable {
                 return nil
             }
             if let c = current, !c.closed {
+                if let q = queued { remove(q.slice); queued = nil }
+                // Spotify, less than a second before the slice is full (its word comes a moment before its last notes): the
+                // new track's first moments go into the slice up to its end, and the new slice begins there. An early end
+                // the renderer can't take — the header promised the whole slice, and the Klimax waited for the rest in
+                // Buffering (4 Nov 2026) — and after a full slice the next one can still be set late (Bridge.setLateNext).
+                if fill, Double(c.frames - c.written) / c.rate <= 1 {
+                    pendingRun = (t, (c.number, c.ms(c.frames)))
+                    Log.note("runs: \(title) began \(c.ms(c.frames - c.written)) ms before slice \(c.number) was full — on in a new slice when it is")
+                    return nil
+                }
                 // The Music app went on before the slice was full (its length was off, or the track wasn't declared): the
                 // slice ends here — the renderer plays it to this point — and the new one follows it.
                 endEarly(c)
                 current = nil
-                if let q = queued { remove(q.slice); queued = nil }
                 pendingRun = (t, (c.number, c.ms(c.written)))
                 if !overflow.isEmpty { begin(rate: overflowRate) }
                 return nil
@@ -224,7 +240,8 @@ final class SliceStore: @unchecked Sendable {
     func declare(_ t: Track, rate askedRate: Double, frames askedFrames: Int) -> Slice? {
         lock.lock(); defer { lock.unlock() }
         let rate = effective(askedRate), frames = max(1, Int(Double(askedFrames) * rate / askedRate))
-        guard perTrack, current != nil || !overflow.isEmpty else { return nil }
+        // Not while a new track waits for the end of the slice being written (startTrackPerTrack, fill).
+        guard perTrack, pendingRun == nil, current != nil || !overflow.isEmpty else { return nil }
         if let q = queued {
             guard !q.slice.headerSent, q.slice.written == 0, current !== q.slice else { return nil }
             remove(q.slice); queued = nil
@@ -267,6 +284,34 @@ final class SliceStore: @unchecked Sendable {
         c.closed = true
         c.frames = max(1, c.written)
         for r in c.readers { pump(c, r) }
+    }
+
+    /// Under the lock: a closed slice's last seconds held back from its readers until its next is set (releaseTail) — at
+    /// most 3 s: the renderer plays 6–8 s behind (4.5 at least, its lead) and must have them before it gets there.
+    private func holdBackTail(_ s: Slice) {
+        s.holdTail = true
+        let n = s.number
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 3) { [weak self] in self?.releaseTail(n, late: true) }
+    }
+
+    /// Per track: the held-back end of slice `number` kept while its next is set — true when it is still held back (the
+    /// renderer can't have looked for its next yet). Released by releaseTail, after a second at the latest.
+    func keepTail(_ number: Int) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard let s = slices[number], s.holdTail else { return false }
+        s.tailKept = true
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1) { [weak self] in self?.releaseTail(number) }
+        return true
+    }
+
+    /// Per track: the held-back end of slice `number` to its readers — the renderer has its next now, or won't get one
+    /// (`late`: the deadline, which leaves a kept end alone).
+    func releaseTail(_ number: Int, late: Bool = false) {
+        lock.lock(); defer { lock.unlock() }
+        guard let s = slices[number], s.holdTail, !(late && s.tailKept) else { return }
+        s.holdTail = false
+        if late { Log.note("runs: \(number) — its end released without a next slice for \(peer)") }
+        for r in s.readers { pump(s, r) }
     }
 
     /// Under the lock: the writing goes on in the declared slice — with what waited in the overflow, at its rate.
@@ -536,9 +581,13 @@ final class SliceStore: @unchecked Sendable {
                     current = nil
                     if queued != nil { moveToQueued(); Log.note("runs: \(c.number) full — on in \(current?.number ?? 0)") }
                     else {
-                        Log.note("runs: \(c.number) full — nothing declared after it, the overflow")
-                        let callback = onOverflow
-                        DispatchQueue.main.async { callback?() }
+                        holdBackTail(c)
+                        if pendingRun != nil { Log.note("runs: \(c.number) full — on in the next track's slice") }
+                        else {
+                            Log.note("runs: \(c.number) full — nothing declared after it, the overflow")
+                            let callback = onOverflow
+                            DispatchQueue.main.async { callback?() }
+                        }
                     }
                     continue
                 }
@@ -704,8 +753,10 @@ final class SliceStore: @unchecked Sendable {
     private func pump(_ s: Slice, _ r: Reader) {
         guard !r.busy else { return }
         if r.offset >= s.bytes { r.connection.cancel(); return }
-        // Held back: the last 0.4 s of an open run (see trimTail); a frozen run gives all it has.
-        let held = s.closed ? 0 : max(0, Int(Self.holdBackSeconds * s.rate) - released)
+        // Held back: the last 1.2 s of an open run (see trimTail), or of a closed slice without a next yet (holdTail); a frozen
+        // run gives all it has.
+        let tail = Int(Self.holdBackSeconds * s.rate)
+        let held = s.closed ? (s.holdTail ? tail : 0) : max(0, tail - released)
         let available = min(max(0, s.written - held), s.limit ?? Int.max) * Self.bytesPerFrame
         guard r.offset < available, let reader = s.reader else { return }
         // Not a trickle (11 Oct 2026, 192 kHz: Roon fetched at 6.3 Mbit/s where 9.2 were needed — 0.69×, and it fell behind

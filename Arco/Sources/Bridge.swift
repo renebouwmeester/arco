@@ -443,7 +443,10 @@ final class Bridge: ObservableObject {
             // Follows a run Roon never got (cut 0.2 s into a start, when the rate changed at once): nothing to wait for.
             if let follows = slice.follows, self.roonSlice == follows.number {
                 if self.source === self.spotify, self.store?.perTrack == true {
-                    if await self.setLateNext(slice, url: url, on: s) { return }
+                    let late = await self.setLateNext(slice, url: url, on: s)
+                    // The end of the slice before it, held back until now (Slice.holdTail): the renderer has its next — or won't.
+                    self.store?.releaseTail(follows.number)
+                    if late { return }
                     Log.note("run \(slice.number): not declared ahead in time — the renderer stops in between")
                 }
                 // Wait until Roon is a quarter of a second before the point of the change (at most the time it still has
@@ -755,7 +758,7 @@ final class Bridge: ObservableObject {
                 defer { declareNext() }   // per track: the next one, now that this one is known
                 if state == .playing { followClock(track, kind: natural ? .natural : .skip) }
                 let coverMissing = !lastInfoHadCover
-                if let mark = store.startTrack(.init(info: info, durationMs: track.durationMs), newRun: !natural) {
+                if let mark = store.startTrack(.init(info: info, durationMs: track.durationMs), newRun: !natural, fill: source === spotify) {
                     marks.append((mark.number, mark.ms, info))
                     if coverMissing { lateCover(track) }
                     Log.note("next track: \(track.title) — goes on in run \(mark.number) at \(mark.ms) ms (\(rest))")
@@ -1286,11 +1289,14 @@ final class Bridge: ObservableObject {
         store.startTrack(.init(info: makeInfo(track), durationMs: left), newRun: false)
     }
 
-    /// Spotify names no next track, but its new one begins seconds before the renderer gets there (it plays ~6 s behind,
+    /// Spotify names no next track, but its new one begins seconds before the renderer gets there (it plays 6–8 s behind,
     /// 3 Nov 2026 on the Klimax): set as the renderer's next now, the slice is gone on in by itself — gapless, instead of a
-    /// stop at the end of the slice before it and a new start (0.5–3 s of silence at every change). False: not in time.
+    /// stop at the end of the slice before it and a new start (0.5–3 s of silence at every change). Only while the end of
+    /// the slice before it is still held back (Slice.holdTail): a next set after the renderer had all of it, the Klimax
+    /// played after a second of Buffering, or not at all (it played the slice it had again). False: not in time.
     private func setLateNext(_ slice: SliceStore.Slice, url: String, on s: Output) async -> Bool {
-        guard !s.isStarved, nextSent < slice.number, store?.isCurrent(slice) == true else { return false }
+        guard !s.isStarved, nextSent < slice.number, store?.isCurrent(slice) == true,
+              let before = slice.follows?.number, store?.keepTail(before) == true else { return false }
         let was = nextSent
         nextSent = slice.number   // from now on a stop of the renderer plays it at once (see .stopped)
         guard await s.setNext(track: String(slice.number), url: url, info: slice.info) else { nextSent = was; return false }
