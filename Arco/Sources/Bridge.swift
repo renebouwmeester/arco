@@ -850,7 +850,9 @@ final class Bridge: ObservableObject {
                         Log.note(String(format: "resume: the Music app 1.2 s back (at %.1f s) — a splice", at))
                     }
                 }
-                if phase == .paused, isUPnP {
+                // Not after a skip during the pause: the renderer would play its buffer of the dropped slice first (4 Nov
+                // 2026, 21:13:17, the Klimax: 5 s of the old track) — the new slice's own play follows, as with Roon below.
+                if phase == .paused, isUPnP, !nieuweRunNaPauze {
                     // A UPnP renderer plays on from its own small buffer at once, and the splice writes nothing new for
                     // 2.5 s: after a pause of 15 s the Ellipse ran dry (21 Oct 2026, 19:23:36). It plays again once the
                     // splice is done, with 1.5 s more — the Music app already plays meanwhile.
