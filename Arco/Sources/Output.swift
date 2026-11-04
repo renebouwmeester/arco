@@ -12,6 +12,8 @@ protocol Output: AnyObject {
     var name: String { get }
     /// The output ran out of music (a UPnP renderer in TRANSITIONING): at a frozen run, the next one can go at once.
     var isStarved: Bool { get }
+    /// The renderer let go of the stream (stopped): a Play would start the old slice over — a resume gets a fresh one.
+    var lostStream: Bool { get }
     func begin(displayName: String, iconURL: String?) async -> Bool
     func play(track: String, url: String, info: JSON) async -> String
     func updateInfo(track: String, info: JSON) async
@@ -45,6 +47,7 @@ final class RoonOutput: Output {
     let name: String
     let lead: Double? = nil
     let isStarved = false
+    let lostStream = false
     var onEvent: ((AudioInputSession.Event) -> Void)? {
         get { session.onEvent }
         set { session.onEvent = newValue }

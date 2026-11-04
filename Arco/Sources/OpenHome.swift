@@ -16,6 +16,9 @@ final class OpenHomeOutput: Output {
     var name: String { renderer.name }
     /// OpenHome's states: Playing, Paused, Stopped, Buffering.
     var isStarved: Bool { ["Buffering", "Stopped"].contains(lastState) }
+    /// Stopped since its last play (3 Nov 2026, the Klimax: stopped at a slice's end, then Pause and Play started that slice
+    /// over from 0 — and it played 100 s behind Spotify from then on). Until the next play, even if it says Paused since.
+    private(set) var lostStream = false
     private var lastState = ""
     /// The renderer's playlist ids and the tracks (slices) they are.
     private var tracks: [Int: String] = [:]
@@ -42,6 +45,7 @@ final class OpenHomeOutput: Output {
     func play(track: String, url: String, info: JSON) async -> String {
         // The tracker first: it read the old list while it was emptied ("slice 2 — ?", 22 Oct 11:06:04).
         poller?.cancel(); poller = nil
+        lostStream = false
         _ = await playlist("DeleteAll")
         tracks = [:]
         guard let id = await insert(after: 0, url: url, info: info),
@@ -111,6 +115,7 @@ final class OpenHomeOutput: Output {
                 if state != self.lastState, !state.isEmpty {
                     let was = self.lastState
                     self.lastState = state
+                    if state == "Stopped" { self.lostStream = true }
                     Log.note("openhome: \(self.renderer.name) — \(state)")
                     switch (was, state) {
                     case ("Playing", "Paused"): self.onEvent?(.paused(track: track))
