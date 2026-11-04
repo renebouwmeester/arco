@@ -39,14 +39,21 @@ final class SpotifyWatcher: PlayerSource {
                 set s to player state as string
                 if s is "stopped" then return s
                 set t to current track
-                return s & linefeed & (name of t) & linefeed & (artist of t) & linefeed & (album of t) & linefeed & ((duration of t) as string)
+                return s & linefeed & (name of t) & linefeed & (artist of t) & linefeed & (album of t) & linefeed & ((duration of t) as string) & linefeed & (id of t)
             end tell
             """)?.stringValue else { update(.stopped, nil); return }
         let lines = reply.components(separatedBy: "\n")
         let state = SourceState(rawValue: lines[0]) ?? .stopped
         guard state != .stopped, lines.count >= 5 else { update(state, nil); return }
-        update(state, SourceTrack(id: SourceTrack.identity(lines[1], lines[2], lines[3]), title: lines[1], artist: lines[2],
-                                  album: lines[3], durationMs: Int(lines[4]) ?? 0))
+        update(state, SourceTrack(id: Self.id(lines.count > 5 ? lines[5] : nil, lines[1], lines[2], lines[3]), title: lines[1],
+                                  artist: lines[2], album: lines[3], durationMs: Int(lines[4]) ?? 0))
+    }
+
+    /// A track is Spotify's own id (spotify:track:…), not its title: Spotify doesn't always spell a title alike (4 Nov 2026:
+    /// the same track as "地元愛▽満タン" and as "地元愛♡満タン" — its pause was taken for a skip, and the slice dropped).
+    private static func id(_ spotifyID: String?, _ title: String, _ artist: String, _ album: String) -> String {
+        if let spotifyID, !spotifyID.isEmpty { return spotifyID }
+        return SourceTrack.identity(title, artist, album)
     }
 
     private func received(_ info: [AnyHashable: Any]) {
@@ -58,8 +65,8 @@ final class SpotifyWatcher: PlayerSource {
         }
         guard state != .stopped, let title = info["Name"] as? String else { update(state, state == .stopped ? nil : track); return }
         let artist = info["Artist"] as? String ?? "", album = info["Album"] as? String ?? ""
-        update(state, SourceTrack(id: SourceTrack.identity(title, artist, album), title: title, artist: artist, album: album,
-                                  durationMs: (info["Duration"] as? NSNumber)?.intValue ?? 0))
+        update(state, SourceTrack(id: Self.id(info["Track ID"] as? String, title, artist, album), title: title, artist: artist,
+                                  album: album, durationMs: (info["Duration"] as? NSNumber)?.intValue ?? 0))
     }
 
     private func update(_ state: SourceState, _ track: SourceTrack?) {
