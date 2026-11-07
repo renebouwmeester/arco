@@ -1,0 +1,40 @@
+<p>Besides Roon, Arco can now play Apple Music straight to a streamer on your network, or clock a DAC on your Mac. Roon is optional.</p>
+<p><strong>Three outputs</strong></p>
+<ul>
+<li>Local, Roon and UPnP side by side in the menu, each with its own switch. Switch off what you don&#x27;t use and it disappears from the menu</li>
+<li>Roon is off on a fresh install and stays on for everyone who enabled Arco in Roon before. Without Roon, Arco doesn&#x27;t look for a Core at all</li>
+<li>The menu says where the music goes and shows the bit depth next to the rate</li>
+</ul>
+<p><strong>UPnP and OpenHome (Experimental)</strong></p>
+<ul>
+<li>Arco sends the Music app to a UPnP or OpenHome streamer, without Roon: one stream per track, each with its own title, artist, album, cover and exact length — your streamer shows them, with a true progress bar</li>
+<li>Gapless: the next track is handed to the streamer ahead (UPnP&#x27;s SetNext, or OpenHome&#x27;s own playlist), at its own rate — 44.1 up to 192 kHz, bit-perfect</li>
+<li>Sonos shows up by its room name, a stereo pair once. Sonos plays 48 kHz at most: Arco converts higher rates down to 44.1 or 48 for Sonos only, by a whole factor</li>
+<li>Tested on KEF LS60, Meridian Ellipse, Naim Mu-so 2, WiiM Mini, a Sonos Era 100 pair, OpenHome (upmpdcli) and GentooPlayer. Other streamers: please tell us how it goes</li>
+<li>Tips: set the streamer&#x27;s volume to fixed, keep the Music app at 100, and prefer a wired streamer for 96 and 192 kHz</li>
+</ul>
+<p><strong>FLAC to your streamer (Experimental, off by default)</strong></p>
+<ul>
+<li>Arco can send FLAC instead of WAV to a UPnP streamer — bit-exact, encoded as the streamer fetches it. Some streamers show more about the track, or handle it better over wifi</li>
+<li>To try it, in Terminal: <code>defaults write nl.renebouwmeester.arco UPnPFLAC -bool YES</code> and play the next track. Back to WAV: <code>defaults delete nl.renebouwmeester.arco UPnPFLAC</code></li>
+<li>Tested on the Naim Mu-so 2 and the KEF LS60. We&#x27;d love to hear how it goes on yours — with your log</li>
+</ul>
+<p><strong>Local (Experimental)</strong></p>
+<ul>
+<li>The Music app plays to a DAC on this Mac, and Arco only sets the DAC&#x27;s rate for each track: from the Music app&#x27;s label, before the first note, never in the middle of a track. No Roon, no Arco driver needed</li>
+</ul>
+<p><strong>Roon</strong></p>
+<ul>
+<li>A change of rate on a slower Mac: the Music app&#x27;s short pause while Arco changes the clock now stays with Arco, so Roon no longer stops on it</li>
+<li>Pause, skip to another track, play: Roon no longer plays a few seconds of the track you skipped away from, and the new track gets its own rate</li>
+</ul>
+<p><strong>macOS 15 Sequoia</strong></p>
+<ul>
+<li>The clock on time at a change of track, from the line the Music app on Sequoia does write</li>
+</ul>
+<p><strong>Also</strong></p>
+<ul>
+<li>A pause by the Music app itself (another device took your Apple Music stream, AirPods off) stops writing at once</li>
+<li>The transition line in the log says when the change was and when the endpoint took it, and speaks for Arco&#x27;s side only at a change of rate</li>
+</ul>
+<p>Please send your log with any report (menu › Show Log)</p>
