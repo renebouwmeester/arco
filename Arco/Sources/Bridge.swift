@@ -514,6 +514,9 @@ final class Bridge: ObservableObject {
     private var lastHeartbeat: String?
     /// A skip happened while Roon was paused: the run Roon holds was dropped, a new one is on its way (see the resume).
     private var nieuweRunNaPauze = false
+    /// SkipPause (0.5.1, a test, off by default): until when a Roon pause on the dropped run is Arco's own.
+    private var skipPauseUntil = Date.distantPast
+    static var skipPause: Bool { UserDefaults.standard.bool(forKey: "SkipPause") }
 
     private func startHeartbeat() {
         heartbeat?.invalidate()
@@ -582,6 +585,11 @@ final class Bridge: ObservableObject {
             // A UPnP renderer pauses on a slice a skip dropped (21 Oct 2026, 23:53:22, the WiiM after a skip to the Nocturnes):
             // Arco's doing, not the listener's — and the menu said "Paused" while the new slice played.
             if isUPnP, Int(track) != store?.status?.number { return }
+            // The pause SkipPause gave on the old run: not the listener's, and the Music app plays the new track.
+            if Date() < skipPauseUntil, Int(track) != store?.status?.number {
+                Log.note("roon: paused on run \(track), the one the skip dropped — the Music app plays on")
+                return
+            }
             if !own { ownUntil = Date().addingTimeInterval(3); source.pause() }
             phase = .paused
         case .unpaused(let track):
@@ -749,6 +757,14 @@ final class Bridge: ObservableObject {
                 meter.begin(track.title, kind: natural ? .natural : .skip, gepauzeerd: phase == .paused)
                 defer { declareNext() }   // per track: the next one, now that this one is known
                 if state == .playing { followClock(track, kind: natural ? .natural : .skip) }
+                // SkipPause (0.5.1, a test: `defaults write nl.renebouwmeester.arco SkipPause -bool YES`): a skip while
+                // Roon plays pauses Roon first, so the dropped run is no MediaError (see SliceStore.drop).
+                if !natural, phase == .playing, state == .playing, !isUPnP, Self.skipPause, !store.perTrack {
+                    skipPauseUntil = Date().addingTimeInterval(8)
+                    roonControl("pause")
+                    store.dropNextSkipLater(0.4)
+                    Log.note("skip: \(peer) paused first, the old run closes after it (SkipPause)")
+                }
                 let coverMissing = !lastInfoHadCover
                 if let mark = store.startTrack(.init(info: info, durationMs: track.durationMs), newRun: !natural) {
                     marks.append((mark.number, mark.ms, info))

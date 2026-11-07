@@ -649,8 +649,34 @@ final class SliceStore: @unchecked Sendable {
     /// its readers waited for bytes that never came, and Roon's downloader for it held the zone's bandwidth: the next one
     /// never started (6 Oct 2026, 21:02:33).
     private func drop(_ s: Slice) {
+        // 0.5.1 (SkipPause, a test): at a skip while Roon plays, Roon is paused first and the old run's readers close a
+        // moment later. Cut off while playing, Roon called it a MediaError, stopped, and showed an old item of its own queue
+        // until the new run came (Frits, 7 Nov 2026). Paused first, it clears the old run as it does at a skip during a pause.
+        // The run is gone for new requests at once, and gives no more sound (not the held-back tail either).
+        if dropLater > 0 {
+            let wait = dropLater
+            dropLater = 0
+            let held = max(0, Int(Self.holdBackSeconds * s.rate) - released)
+            s.limit = max(0, s.written - held)
+            s.closed = true
+            slices[s.number] = nil
+            Log.note("runs: \(s.number) dropped (a skip) — its readers close in \(Int(wait * 1000)) ms, after Roon's pause")
+            DispatchQueue.global().asyncAfter(deadline: .now() + wait) { [weak self] in
+                guard let self else { return }
+                self.lock.lock(); defer { self.lock.unlock() }
+                self.remove(s)
+            }
+            return
+        }
         remove(s)
         Log.note("runs: \(s.number) dropped (a skip)")
+    }
+
+    /// The next skip drops its run a moment later (SkipPause, see drop).
+    private var dropLater: TimeInterval = 0
+    func dropNextSkipLater(_ wait: TimeInterval) {
+        lock.lock(); defer { lock.unlock() }
+        dropLater = wait
     }
 
     private func remove(_ s: Slice) {
