@@ -913,11 +913,14 @@ final class Bridge: ObservableObject {
             guard current(), let r = self.music.sampleRate(), r > 0 else { return }
             // Always in the log (0.3.1): a tester's "96 kHz" track stayed at 44.1 — what the Music app says later settles it.
             Log.note("clock: \(track.title) — five seconds in, the Music app says \(Int(r)) Hz")
-            guard Int(r) != read.rate else { return }
+            // 0.5.1: compare with the clock as it stands now, not with the first reading. A late label may have moved the
+            // clock in these five seconds (Frits, 7 Nov 2026: corrected to 96 kHz, and still "stays at 48000").
+            let nu = self.arcoDevice.flatMap { AudioDevices.sampleRate(of: $0) }.map { Int($0) } ?? read.rate
+            guard Int(r) != nu else { return }
             // 0.4.0: never a change of clock this far into a track (Roon has started to play it): it plays on, resampled,
             // and the rate is remembered for the next time.
             self.clock.remember(Int(r), for: track)
-            Log.note("clock: \(track.title) — stays at \(read.rate) Hz, plays on resampled (\(Int(r)) Hz remembered)")
+            Log.note("clock: \(track.title) — stays at \(nu) Hz, plays on resampled (\(Int(r)) Hz remembered)")
         }
     }
 
