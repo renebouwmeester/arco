@@ -13,6 +13,6 @@ grep -q "Arco-$VERSION.pkg" "$CAST" || { echo "$CAST is not for $VERSION"; exit 
 NOTES=(--notes "Arco $VERSION")
 [ -f "Package/notes/$VERSION.md" ] && NOTES=(--notes-file "Package/notes/$VERSION.md")
 # A beta (0.5.0b1) is a pre-release: releases/latest — what Sparkle reads — keeps pointing at the last real release, so
-# only testers who download it get it.
+# only testers who download it get it. (An empty PRE under set -u needs the +-form on macOS' bash 3.2 — 0.5.0, 7 Nov 2026.)
 PRE=(); [[ "$VERSION" == *b* ]] && PRE=(--prerelease)
-gh release create "v$VERSION" "$PKG" "$CAST" --repo renebouwmeester/arco --title "Arco $VERSION" "${NOTES[@]}" "${PRE[@]}"
+gh release create "v$VERSION" "$PKG" "$CAST" --repo renebouwmeester/arco --title "Arco $VERSION" "${NOTES[@]}" ${PRE[@]+"${PRE[@]}"}

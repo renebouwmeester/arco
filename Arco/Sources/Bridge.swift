@@ -184,9 +184,9 @@ final class Bridge: ObservableObject {
         default: return false
         }
     }
-    /// Spotify as a source: in the code, off unless asked for (René, 8 Oct: Arco is Apple Music in Roon; Spotify goes to
-    /// Roon by way of a Spotify Connect endpoint). `defaults write nl.renebouwmeester.arco SpotifySource -bool true`.
-    static var spotifyEnabled: Bool { UserDefaults.standard.bool(forKey: "SpotifySource") }
+    /// Spotify as a source: off since 8 Oct (René: Arco is Apple Music in Roon), on by default again since 0.5.0 (René, 7 Nov
+    /// 2026: "getest en werkend — van mij mag hij standaard aan"). Off: `defaults write nl.renebouwmeester.arco SpotifySource -bool false`.
+    static var spotifyEnabled: Bool { UserDefaults.standard.object(forKey: "SpotifySource") as? Bool ?? true }
     /// A fixed rate per zone (0.3.7, René: "an optional 96 cap that makes for a smoother, continuous stream, as with
     /// Spotify"): the Arco device stays at 96 kHz for the Music app, so there's never a change of rate — no run frozen and
     /// started again, no DAC locking on to a new rate, no seam in Roon. The price: the Music app resamples whatever isn't
