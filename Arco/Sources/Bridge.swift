@@ -762,7 +762,9 @@ final class Bridge: ObservableObject {
                 if !natural, phase == .playing, state == .playing, !isUPnP, Self.skipPause, !store.perTrack {
                     skipPauseUntil = Date().addingTimeInterval(8)
                     roonControl("pause")
-                    store.dropNextSkipLater(0.4)
+                    // 3 s (8 nov 2026, de proef 44,1 → 88,2): met een klokwissel kreeg Roon de nieuwe run later dan 0,4 s, las nog
+                    // bij op de gesloten oude en meldde alsnog MediaError (een flard oud artwork). Roon laat de oude zelf los bij de nieuwe.
+                    store.dropNextSkipLater(3)
                     Log.note("skip: \(peer) paused first, the old run closes after it (SkipPause)")
                 }
                 let coverMissing = !lastInfoHadCover
