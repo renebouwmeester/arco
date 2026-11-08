@@ -514,9 +514,10 @@ final class Bridge: ObservableObject {
     private var lastHeartbeat: String?
     /// A skip happened while Roon was paused: the run Roon holds was dropped, a new one is on its way (see the resume).
     private var nieuweRunNaPauze = false
-    /// SkipPause (0.5.1, a test, off by default): until when a Roon pause on the dropped run is Arco's own.
+    /// SkipPause (0.5.1, on by default since the test of 8 Nov 2026): until when a Roon pause on the dropped run is Arco's own.
+    /// Off: `defaults write nl.renebouwmeester.arco SkipPause -bool NO`.
     private var skipPauseUntil = Date.distantPast
-    static var skipPause: Bool { UserDefaults.standard.bool(forKey: "SkipPause") }
+    static var skipPause: Bool { UserDefaults.standard.object(forKey: "SkipPause") as? Bool ?? true }
 
     private func startHeartbeat() {
         heartbeat?.invalidate()
