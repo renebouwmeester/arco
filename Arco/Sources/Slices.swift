@@ -714,6 +714,14 @@ final class SliceStore: @unchecked Sendable {
         if let range, let match = range.range(of: #"bytes=(\d+)-"#, options: .regularExpression) {
             from = min(total, Int(range[match].filter(\.isNumber)) ?? 0)
         }
+        // Asked from the end (or past it) of a finished slice: 416, the HTTP way to say "that was all" (9 Nov 2026, a tester's Linn:
+        // a stream without a length is asked for more when the connection closes; a 206 for "14935921-14935920" made it ask again
+        // every 70 ms).
+        if from >= total, s.closed || !zonderLengte {
+            let uit = "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */\(total)\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            connection.send(content: Data(uit.utf8), completion: .contentProcessed { _ in connection.cancel() })
+            return true
+        }
         var http = from > 0
             ? "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes \(from)-\(total - 1)/\(total)\r\nContent-Length: \(total - from)\r\n"
             : "HTTP/1.1 200 OK\r\nContent-Length: \(total)\r\n"
@@ -841,6 +849,13 @@ final class SliceStore: @unchecked Sendable {
             from = Int(range[match].filter(\.isNumber)) ?? 0
         }
         var http: String
+        // As for WAV: asked from the end of a finished slice — 416, "that was all" (the Linn asked again every 70 ms).
+        if s.flacDone, from >= size {
+            Log.note("runs: \(s.number) — FLAC asked from its end (\(size) bytes): 416, that was all")
+            let uit = "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */\(size)\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            connection.send(content: Data(uit.utf8), completion: .contentProcessed { _ in connection.cancel() })
+            return
+        }
         if s.flacDone {
             from = min(size, from)
             http = from > 0
