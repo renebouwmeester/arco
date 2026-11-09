@@ -146,6 +146,8 @@ final class SliceStore: @unchecked Sendable {
     /// Called (on the main queue) when a run begins: the bridge plays it in Roon — at once, or when Roon reaches the point
     /// where the run before it was frozen.
     var onSliceStarted: ((Slice) -> Void)?
+    /// A renderer asked for more at the end of a finished slice (the 416s below): it is done with it but did not go on by itself.
+    var onAskedFromEnd: ((Int) -> Void)?
 
     init(directory: URL) {
         self.directory = directory
@@ -720,6 +722,7 @@ final class SliceStore: @unchecked Sendable {
         if from >= total, s.closed || !zonderLengte {
             let uit = "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */\(total)\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
             connection.send(content: Data(uit.utf8), completion: .contentProcessed { _ in connection.cancel() })
+            if let cb = onAskedFromEnd { let n = s.number; DispatchQueue.main.async { cb(n) } }
             return true
         }
         var http = from > 0
@@ -854,6 +857,7 @@ final class SliceStore: @unchecked Sendable {
             Log.note("runs: \(s.number) — FLAC asked from its end (\(size) bytes): 416, that was all")
             let uit = "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */\(size)\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
             connection.send(content: Data(uit.utf8), completion: .contentProcessed { _ in connection.cancel() })
+            if let cb = onAskedFromEnd { let n = s.number; DispatchQueue.main.async { cb(n) } }
             return
         }
         if s.flacDone {

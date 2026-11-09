@@ -80,6 +80,7 @@ final class OpenHomeOutput: Output {
             switch control {
             case "pause": _ = await playlist("Pause")
             case "play": _ = await playlist("Play")
+            case "next": _ = await playlist("Next")
             default: break
             }
         }

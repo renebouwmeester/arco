@@ -296,7 +296,10 @@ final class Bridge: ObservableObject {
         // FLAC to UPnP renderers (26 Oct 2026, a test: `defaults write <Arco> UPnPFLAC -bool YES`).
         s.flac = UserDefaults.standard.bool(forKey: "UPnPFLAC")
         // OpenHome: WAV without a length while a slice grows (9 Nov 2026, a tester's Linn) — see SliceStore.zonderLengte.
-        if case .upnp(let r) = target, r.openHome != nil { s.zonderLengte = true }
+        if case .upnp(let r) = target, r.openHome != nil {
+            s.zonderLengte = true
+            s.onAskedFromEnd = { [weak self] n in MainActor.assumeIsolated { self?.vanEindGevraagd(n) } }
+        }
         s.onSliceStarted = { [weak self] slice in self?.sliceStarted(slice) }
         store = s
         storeHolder.set(s)
@@ -1263,6 +1266,18 @@ final class Bridge: ObservableObject {
                 Log.note("upnp: \(r.name) refuses SetNext — from its next start on the runs (one stream per rate)")
             }
         }
+    }
+
+    /// OpenHome (9 Nov 2026, a tester's Linn): at the end of a finished slice the Linn asked for more, again and again, instead of
+    /// going on to the next one in its playlist — and played it at once when Next was pressed in its own app. So Arco presses it:
+    /// once per slice, only when the slice that plays is done and the next one is in the renderer's playlist.
+    private var geduwdNa = 0
+    private func vanEindGevraagd(_ n: Int) {
+        guard case .upnp(let r) = target, r.openHome != nil, n == roonSlice, n > geduwdNa,
+              let volgende = store?.slice(after: n), nextSent >= volgende.number, let s = session else { return }
+        geduwdNa = n
+        Log.note("openhome: \(r.name) asks for more at the end of slice \(n) — Next, on to slice \(volgende.number)")
+        s.control("next")
     }
 
     /// The renderer moved on to slice `n` (per track): its title in the menu, older slices gone, the next one set.
