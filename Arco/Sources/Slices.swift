@@ -127,6 +127,11 @@ final class SliceStore: @unchecked Sendable {
     var perTrack = false
     /// The slices as FLAC instead of WAV (per track only; see Slice.flacFile).
     var flac = false
+    /// A WAV slice without a length while it grows, as FLAC (9 Nov 2026, a tester's Linn over OpenHome): the Content-Length was
+    /// the declared length; when the Music app went on early, the slice ended short of it and the Linn stayed in Buffering, waiting
+    /// for bytes that never came. Without a length the end of the connection is the end of the track. OpenHome only for now —
+    /// Roon and the other renderers keep what works for them.
+    var zonderLengte = false
     private var ext: String { flac && perTrack ? "flac" : "wav" }
     /// The highest rate the renderer takes (Sonos: 48 kHz). Above it, the music is converted down as it is written, and
     /// the slices are at the lower rate — see Downsampler.
@@ -712,6 +717,9 @@ final class SliceStore: @unchecked Sendable {
         var http = from > 0
             ? "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes \(from)-\(total - 1)/\(total)\r\nContent-Length: \(total - from)\r\n"
             : "HTTP/1.1 200 OK\r\nContent-Length: \(total)\r\n"
+        if zonderLengte, !s.closed {
+            http = from > 0 ? "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes \(from)-*/*\r\n" : "HTTP/1.1 200 OK\r\n"
+        }
         // The DLNA lines for UPnP renderers (as Basso's bridge sends them; Roon ignores them).
         http += "Content-Type: audio/wav\r\nAccept-Ranges: bytes\r\ntransferMode.dlna.org: Streaming\r\n"
             + "contentFeatures.dlna.org: DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000\r\nConnection: close\r\n\r\n"

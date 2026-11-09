@@ -295,6 +295,8 @@ final class Bridge: ObservableObject {
         if case .upnp(let r) = target { s.maxRate = r.maxRate; s.peer = "the renderer" }
         // FLAC to UPnP renderers (26 Oct 2026, a test: `defaults write <Arco> UPnPFLAC -bool YES`).
         s.flac = UserDefaults.standard.bool(forKey: "UPnPFLAC")
+        // OpenHome: WAV without a length while a slice grows (9 Nov 2026, a tester's Linn) — see SliceStore.zonderLengte.
+        if case .upnp(let r) = target, r.openHome != nil { s.zonderLengte = true }
         s.onSliceStarted = { [weak self] slice in self?.sliceStarted(slice) }
         store = s
         storeHolder.set(s)
