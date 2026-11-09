@@ -26,8 +26,8 @@ targets:
       path: Arco/Info.plist
       properties:
         CFBundleDisplayName: Arco
-        CFBundleShortVersionString: "0.5.1"
-        CFBundleVersion: "29"
+        CFBundleShortVersionString: "0.5.2b1"
+        CFBundleVersion: "30"
         LSMinimumSystemVersion: "14.0"
         # A menu bar app: no Dock icon, no main window.
         LSUIElement: true
