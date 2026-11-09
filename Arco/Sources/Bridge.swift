@@ -782,6 +782,8 @@ final class Bridge: ObservableObject {
                                 || store.queuedSlice.map({ Self.lines($0.info)?.title == track.title }) == true
                                 ? "its declared slice" : "not declared ahead, a slice after the last"
                         Log.note("next track: \(track.title) — \(how) (\(rest))")
+                        // OpenHome waits for sound before the next goes in (see sendNext): a second later it is there.
+                        Task { @MainActor in try? await Task.sleep(for: .seconds(1)); self.sendNext() }
                     } else {
                         Log.note("next track: \(track.title) — \(natural ? "begins the next run" : "a skip, a new run at once") (\(rest))")
                     }
@@ -1243,6 +1245,10 @@ final class Bridge: ObservableObject {
     private func sendNext() {
         guard let store, let q = store.queuedSlice ?? store.slice(after: roonSlice), q.number > nextSent, q.declared,
               store.slice(after: roonSlice)?.number == q.number, let s = session, let address else { return }
+        // OpenHome (9 Nov 2026, a tester's Linn): the renderer fetches the next track in its playlist at once, to play gapless —
+        // inserted four minutes before the Music app got there, the Linn waited on an empty slice, gave up, and stayed in
+        // Buffering at the change. So only once the slice has sound; Arco still runs seconds ahead.
+        if case .upnp(let r) = target, r.openHome != nil, q.written == 0 { return }
         nextSent = q.number
         let url = "http://\(address):\(server.port)\(q.path)"
         Task { @MainActor in
