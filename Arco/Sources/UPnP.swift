@@ -42,7 +42,12 @@ struct UPnPRenderer: Identifiable, Equatable, Sendable {
             for l in locations { group.addTask { await describe(l) } }
             for await r in group { if let r { found[r.id] = r } }
         }
-        return found.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        // A Linn (and others with an OpenHome source) also announces a plain UPnP AV twin on the same address ("Music Room:UPnP AV",
+        // 9 Nov 2026: a tester picked it, and it has no SetNext). Where the same address speaks OpenHome, only that one is shown.
+        let metOpenHome = Set(found.values.filter { $0.openHome != nil }.map(\.host))
+        return found.values
+            .filter { $0.openHome != nil || !metOpenHome.contains($0.host) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     private static func search(seconds: TimeInterval) -> [URL] {
@@ -284,6 +289,11 @@ final class UPnPOutput: Output {
     /// "STOPPED" — and a Play the next morning had nothing to play): stopped, or no answer three times in a row.
     var lostStream: Bool { failures >= 3 || ["STOPPED", "NO_MEDIA_PRESENT"].contains(lastState) }
     private var failures = 0
+    /// Stuck at the end (9 Nov 2026, a Linn's UPnP AV: PLAYING → TRANSITIONING at the end of a slice, and never STOPPED — the next
+    /// slice was never played): since when, where it was, and how long the track is (0 = unknown).
+    private var vastSinds: Date?
+    private var vastGemeld = false
+    private var laatstePositie = 0, laatsteDuur = 0
     /// Which track each URL is (per track the renderer moves on to the next by itself; its TrackURI says where it is).
     private var tracks: [String: String] = [:]
 
@@ -376,11 +386,23 @@ final class UPnPOutput: Output {
                         self.onEvent?(.playing(track: t))
                     }
                     self.onEvent?(.time(track: track, positionMs: Self.ms(rel)))
+                    self.laatstePositie = Self.ms(rel)
+                    self.laatsteDuur = UPnPRenderer.value("TrackDuration", in: position).map { Self.ms($0) } ?? 0
+                }
+                // Out of PLAYING into TRANSITIONING, and no further for 4 s at the end of the track (or a track of unknown length):
+                // the renderer is done with it, as if it said STOPPED. Not mid-track — that is a renderer buffering.
+                if state == "TRANSITIONING", let v = self.vastSinds, !self.vastGemeld, Date().timeIntervalSince(v) > 4,
+                   self.laatsteDuur == 0 || self.laatstePositie >= self.laatsteDuur - 6000 {
+                    self.vastGemeld = true
+                    Log.note("upnp: \(self.renderer.name) stays in TRANSITIONING at \(self.laatstePositie) ms — the end of the track, taken as stopped")
+                    self.onEvent?(.stopped(track: track))
                 }
                 if state != self.lastState, !state.isEmpty {
                     let was = self.lastState
                     self.lastState = state
                     Log.note("upnp: \(self.renderer.name) — \(state)")
+                    if was == "PLAYING", state == "TRANSITIONING" { self.vastSinds = Date(); self.vastGemeld = false }
+                    else if state != "TRANSITIONING" { self.vastSinds = nil }
                     switch (was, state) {
                     case ("PLAYING", "PAUSED_PLAYBACK"): self.onEvent?(.paused(track: track))
                     case ("PAUSED_PLAYBACK", "PLAYING"): self.onEvent?(.unpaused(track: track))
