@@ -1258,6 +1258,7 @@ final class Bridge: ObservableObject {
         let url = "http://\(address):\(server.port)\(q.path)"
         Task { @MainActor in
             let ok = await s.setNext(track: String(q.number), url: url, info: q.info)
+            if ok { self.ingevoegdTot = max(self.ingevoegdTot, q.number) }
             Log.note("next: slice \(q.number) (\(Self.lines(q.info)?.title ?? "?")) set as the renderer's next\(ok ? "" : " — refused")")
             // Refused: this renderer gets the runs from its next start on (remembered); this session goes on slice by slice,
             // each one played when the renderer stopped at the end of the one before (a short gap).
@@ -1272,9 +1273,12 @@ final class Bridge: ObservableObject {
     /// going on to the next one in its playlist — and played it at once when Next was pressed in its own app. So Arco presses it:
     /// once per slice, only when the slice that plays is done and the next one is in the renderer's playlist.
     private var geduwdNa = 0
+    /// The highest slice the renderer confirmed in its playlist (Insert answered): Next only once it is really there (b4 pressed it
+    /// 6 ms before the Insert came back — it went well, by luck).
+    private var ingevoegdTot = 0
     private func vanEindGevraagd(_ n: Int) {
         guard case .upnp(let r) = target, r.openHome != nil, n == roonSlice, n > geduwdNa,
-              let volgende = store?.slice(after: n), nextSent >= volgende.number, let s = session else { return }
+              let volgende = store?.slice(after: n), ingevoegdTot >= volgende.number, let s = session else { return }
         geduwdNa = n
         Log.note("openhome: \(r.name) asks for more at the end of slice \(n) — Next, on to slice \(volgende.number)")
         s.control("next")
