@@ -1248,8 +1248,12 @@ final class Bridge: ObservableObject {
     /// The declared slice to the renderer as its next — once it plays the slice before it (an earlier SetNext would make it
     /// skip the one in between).
     private func sendNext() {
-        guard let store, let q = store.queuedSlice ?? store.slice(after: roonSlice), q.number > nextSent, q.declared,
-              store.slice(after: roonSlice)?.number == q.number, let s = session, let address else { return }
+        // Always the slice right after the one the renderer plays (11 Nov 2026, a tester's Linn, b4): this took the last DECLARED
+        // slice first — when the track after the next was declared within the second after the Music app moved on (Apple's
+        // album lookup is quick), that was N+1, the check below refused it, and slice N never went into the Linn's playlist; the
+        // Linn reached the end with nothing after it and stayed in Buffering. Six times in one log, every time under the second.
+        guard let store, let q = store.slice(after: roonSlice), q.number > nextSent, q.declared,
+              let s = session, let address else { return }
         // OpenHome (9 Nov 2026, a tester's Linn): the renderer fetches the next track in its playlist at once, to play gapless —
         // inserted four minutes before the Music app got there, the Linn waited on an empty slice, gave up, and stayed in
         // Buffering at the change. So only once the slice has sound; Arco still runs seconds ahead.
