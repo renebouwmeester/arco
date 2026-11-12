@@ -858,6 +858,9 @@ final class Bridge: ObservableObject {
                     }
                 }
                 if phase == .paused, isUPnP {
+                    // A skip during the pause: the clock follows now, as for Roon below (0.5.2b7, a tester's Linn: Knockin' on Your
+                    // Screen Door, 96 kHz, played at 44.1 — this branch came first and the Roon fix of 25 Oct never ran for UPnP).
+                    if nieuweRunNaPauze, let t = source.track { followClock(t, kind: .skip) }
                     // A UPnP renderer plays on from its own small buffer at once, and the splice writes nothing new for
                     // 2.5 s: after a pause of 15 s the Ellipse ran dry (21 Oct 2026, 19:23:36). It plays again once the
                     // splice is done, with 1.5 s more — the Music app already plays meanwhile.
