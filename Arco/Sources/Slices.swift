@@ -554,7 +554,9 @@ final class SliceStore: @unchecked Sendable {
                 if perTrack, c.isFull, c.rate == rate {
                     // Full: on in the declared next slice, or the overflow until the next track is known.
                     c.closed = true
-                    if c.isFlac { for r in c.readers { pump(c, r) } }
+                    // WAV without a length too (0.5.2b6, a tester's Linn, 11 Nov 2026 at 22:00): its readers had the last 0.4 s
+                    // held back and no end of the connection — the Linn stayed in Buffering at the end of the slice until Next.
+                    if c.isFlac || zonderLengte { for r in c.readers { pump(c, r) } }
                     current = nil
                     if queued != nil { moveToQueued(); Log.note("runs: \(c.number) full — on in \(current?.number ?? 0)") }
                     else { Log.note("runs: \(c.number) full — nothing declared after it, the overflow") }
@@ -586,7 +588,7 @@ final class SliceStore: @unchecked Sendable {
                     // A change of rate (or three hours at one rate): freeze the run where it is — Roon still plays its
                     // end — and go on in a new run at the new rate, with the track that plays now.
                     c.closed = true
-                    if c.isFlac { for r in c.readers { pump(c, r) } }
+                    if c.isFlac || zonderLengte { for r in c.readers { pump(c, r) } }
                     current = nil
                     if perTrack, let q = queued { remove(q.slice); queued = nil }
                     // Back to the start of the track (TrackClock): the next run takes over where the track began.
@@ -769,6 +771,9 @@ final class SliceStore: @unchecked Sendable {
         // Held back: the last 0.4 s of an open run (see trimTail); a frozen run gives all it has.
         let held = s.closed ? 0 : max(0, Int(Self.holdBackSeconds * s.rate) - released)
         let available = min(max(0, s.written - held), s.limit ?? Int.max) * Self.bytesPerFrame
+        // A closed slice without a length ends where it ends, short of its declared length or not: the end of the connection
+        // is the end of the track (see zonderLengte).
+        if zonderLengte, s.closed, r.offset >= available { r.connection.cancel(); return }
         guard r.offset < available, let reader = s.reader else { return }
         // Not a trickle (11 Oct 2026, 192 kHz: Roon fetched at 6.3 Mbit/s where 9.2 were needed — 0.69×, and it fell behind
         // by that much): at the edge of an open run every capture of 512 frames (2.7 ms at 192 kHz) was a send of 3 KB of its

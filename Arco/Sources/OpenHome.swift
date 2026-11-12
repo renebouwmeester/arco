@@ -117,6 +117,9 @@ final class OpenHomeOutput: Output {
                     case ("Playing", "Paused"): self.onEvent?(.paused(track: track))
                     case ("Paused", "Playing"): self.onEvent?(.unpaused(track: track))
                     case ("Playing", "Stopped"), ("Paused", "Stopped"): self.onEvent?(.stopped(track: track))
+                    // A Linn pauses a stream as a stop; Play in its app is then Stopped → Playing (or Buffering: the Music app is
+                    // paused, there is nothing new to fetch). The bridge only acts on it when the Music app is paused (0.5.2b6).
+                    case ("Stopped", "Playing"), ("Stopped", "Buffering"): self.onEvent?(.unpaused(track: track))
                     default: break
                     }
                 }

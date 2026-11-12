@@ -600,6 +600,9 @@ final class Bridge: ObservableObject {
             phase = .paused
         case .unpaused(let track):
             guard current(track) else { return }
+            // A UPnP renderer that starts again after a stop (Play in the Linn app, 0.5.2b6): only while the Music app is paused —
+            // a start Arco gave the renderer itself, with the Music app playing, is not the listener's.
+            if isUPnP, phase != .paused { return }
             if !own { ownUntil = Date().addingTimeInterval(3); source.play() }
             phase = .playing
         case .stopped(let track):
