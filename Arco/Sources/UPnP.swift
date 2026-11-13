@@ -67,10 +67,16 @@ struct UPnPRenderer: Identifiable, Equatable, Sendable {
         address.sin_family = sa_family_t(AF_INET)
         address.sin_port = UInt16(1900).bigEndian
         inet_pton(AF_INET, "239.255.255.250", &address.sin_addr)
+        // Through every network connection of the Mac (0.5.2b9, see Discovery.query): through the default one only, a Mac with
+        // Wi-Fi or a VPN ahead of its Ethernet never reached the renderers on the wire.
+        let kaarten = Discovery.ipv4Interfaces()
         for _ in 0..<2 {
-            for query in queries {
-                _ = withUnsafePointer(to: &address) { p in
-                    p.withMemoryRebound(to: sockaddr.self, capacity: 1) { sendto(fd, query, query.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+            for k in (kaarten.isEmpty ? [nil] : kaarten.map { Optional($0.address) }) {
+                if var bron = k { setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF, &bron, socklen_t(MemoryLayout<in_addr>.size)) }
+                for query in queries {
+                    _ = withUnsafePointer(to: &address) { p in
+                        p.withMemoryRebound(to: sockaddr.self, capacity: 1) { sendto(fd, query, query.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+                    }
                 }
             }
         }

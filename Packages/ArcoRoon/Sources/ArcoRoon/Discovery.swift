@@ -40,7 +40,19 @@ public enum Discovery {
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &wait, socklen_t(MemoryLayout<timeval>.size))
 
         let packet = makeQuery()
-        for target in ["239.255.90.90", "255.255.255.255"] { send(packet, on: fd, to: target) }
+        // On every network connection of the Mac, as Roon itself asks (0.5.2b9, a tester with his Core in Docker on a NAS:
+        // Roon.app on the same Mac found it at once, Arco never): one datagram to the group and the broadcast address went out
+        // only through the Mac's DEFAULT connection — Wi-Fi, a VPN or a virtual adapter ahead of the Ethernet, and the question
+        // never reached the Core. Now the multicast goes out through each interface, plus each subnet's own broadcast.
+        let kaarten = ipv4Interfaces()
+        for k in kaarten {
+            var bron = k.address
+            setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF, &bron, socklen_t(MemoryLayout<in_addr>.size))
+            send(packet, on: fd, to: "239.255.90.90")
+            if let b = k.broadcast { send(packet, on: fd, to: b) }
+        }
+        if kaarten.isEmpty { send(packet, on: fd, to: "239.255.90.90") }
+        send(packet, on: fd, to: "255.255.255.255")
 
         var found: [String: DiscoveredCore] = [:]
         var buffer = [UInt8](repeating: 0, count: 65_536)
@@ -88,6 +100,32 @@ public enum Discovery {
         var text = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
         guard inet_ntop(AF_INET, &local.sin_addr, &text, socklen_t(INET_ADDRSTRLEN)) != nil else { return nil }
         return String(cString: text)
+    }
+
+    /// The Mac's IPv4 connections that can carry multicast (up, running, not the loopback): their address, and their subnet's
+    /// broadcast address where there is one.
+    public static func ipv4Interfaces() -> [(name: String, address: in_addr, broadcast: String?)] {
+        var lijst: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&lijst) == 0, let eerste = lijst else { return [] }
+        defer { freeifaddrs(lijst) }
+        var uit: [(name: String, address: in_addr, broadcast: String?)] = []
+        var gezien = Set<UInt32>()
+        for p in sequence(first: eerste, next: { $0.pointee.ifa_next }) {
+            let ifa = p.pointee
+            let vlag = Int32(ifa.ifa_flags)
+            guard let adres = ifa.ifa_addr, adres.pointee.sa_family == sa_family_t(AF_INET),
+                  vlag & IFF_UP != 0, vlag & IFF_RUNNING != 0, vlag & IFF_MULTICAST != 0, vlag & IFF_LOOPBACK == 0 else { continue }
+            let a = adres.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr }
+            guard gezien.insert(a.s_addr).inserted else { continue }
+            var broadcast: String?
+            if vlag & IFF_BROADCAST != 0, let b = ifa.ifa_dstaddr {
+                var ba = b.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr }
+                var tekst = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+                if inet_ntop(AF_INET, &ba, &tekst, socklen_t(INET_ADDRSTRLEN)) != nil { broadcast = String(cString: tekst) }
+            }
+            uit.append((String(cString: ifa.ifa_name), a, broadcast))
+        }
+        return uit
     }
 
     static func makeQuery() -> [UInt8] {
