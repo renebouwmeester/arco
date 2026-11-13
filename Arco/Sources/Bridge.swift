@@ -517,6 +517,23 @@ final class Bridge: ObservableObject {
     }
 
     private var lastHeartbeat: String?
+    /// What was written at the last beat, for the self-check.
+    private var vorigeSchrijf: (number: Int, writtenMs: Int)?
+    /// The Music app's own word when its notifications stay away (0.5.2b8, a tester's log, 12 Nov 15:07–16:03: an hour without
+    /// "playing" or a change of track while it played — the Linn never got the next track). Two signs that Arco missed something:
+    /// sound is written while it thinks the Music app is paused, or the slice being written is another track than the one it
+    /// knows. Then it asks the Music app itself (AppleScript); a change it hears goes the usual way.
+    private func zelfcontrole(_ status: (number: Int, writtenMs: Int)) {
+        defer { vorigeSchrijf = status }
+        guard source === music, isOn, let vorige = vorigeSchrijf else { return }
+        let geschreven = status.number != vorige.number || status.writtenMs > vorige.writtenMs + 1000
+        let pauzeMaarGeluid = geschreven && source.state != .playing
+        let anderNummer = geschreven && store?.perTrack == true && store?.writingDeclared == true
+            && store?.writingTitle != nil && store?.writingTitle != source.track?.title
+        guard pauzeMaarGeluid || anderNummer else { return }
+        Log.note("music: no word from the Music app (\(pauzeMaarGeluid ? "sound while it was paused" : "the slice is \(store?.writingTitle ?? "?")")) — asking it")
+        music.refresh()
+    }
     /// A skip happened while Roon was paused: the run Roon holds was dropped, a new one is on its way (see the resume).
     private var nieuweRunNaPauze = false
     /// SkipPause (0.5.1, on by default since the test of 8 Nov 2026): until when a Roon pause on the dropped run is Arco's own.
@@ -529,6 +546,7 @@ final class Bridge: ObservableObject {
         heartbeat = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, let status = self.store?.status else { return }
+                self.zelfcontrole(status)
                 // Only when something moved (0.5.0b5: a paused Roon zone wrote the same line every ten seconds for minutes).
                 let regel = "run \(status.number): \(status.writtenMs) ms written; \(self.peer) in run \(self.roonSlice) at \(self.roonPositionMs) ms"
                 guard regel != self.lastHeartbeat else { return }
@@ -790,8 +808,16 @@ final class Bridge: ObservableObject {
                                 || store.queuedSlice.map({ Self.lines($0.info)?.title == track.title }) == true
                                 ? "its declared slice" : "not declared ahead, a slice after the last"
                         Log.note("next track: \(track.title) — \(how) (\(rest))")
-                        // OpenHome waits for sound before the next goes in (see sendNext): a second later it is there.
-                        Task { @MainActor in try? await Task.sleep(for: .seconds(1)); self.sendNext() }
+                        // OpenHome waits for sound before the next goes in (see sendNext). Not once after a second (0.5.2b8, a tester's
+                        // Linn, 12 Nov 18:06: at a change of clock the sound came 3.1 s later, and the next track went in only when the
+                        // one after it began — two minutes late): every half second, up to 15 s, until it has gone in.
+                        Task { @MainActor in
+                            for _ in 0..<30 {
+                                try? await Task.sleep(for: .milliseconds(500))
+                                guard let q = self.store?.slice(after: self.roonSlice), q.number > self.nextSent else { return }
+                                self.sendNext()
+                            }
+                        }
                     } else {
                         Log.note("next track: \(track.title) — \(natural ? "begins the next run" : "a skip, a new run at once") (\(rest))")
                     }
