@@ -328,6 +328,10 @@ final class Bridge: ObservableObject {
         roonPositionMs = 0
         roonSlice = 0
         nextSent = 0
+        // A new session's slices are numbered from 1 again (a new SliceStore): what was counted in slices goes back too (ronde 0
+        // of the review, 14 Nov 2026 — a second session on a Linn never pressed Next again, its slices stayed below geduwdNa).
+        geduwdNa = 0; ingevoegdTot = 0; roonDoneRun = nil
+        nieuweRunNaPauze = false; skipPauseUntil = .distantPast
         marks = []
         session?.end()
         session = nil
@@ -409,7 +413,9 @@ final class Bridge: ObservableObject {
     // MARK: - The session in Roon
 
     private func startSession() async {
-        guard let target, let address, let store else { return }
+        // Once: two reasons to start while waiting (a "playing" and a change of track, or another source) were two Tasks, and
+        // the second began a second session while the first waited for Roon's answer (ronde 0 of the review).
+        guard phase == .waitingForMusic, let target, let address, let store else { return }
         phase = .starting
         let s: Output
         switch target {

@@ -46,10 +46,14 @@ ones that only speak RAAT.
 
 The list goes away once everything is in place. *Open at login* is a checkbox in the menu.
 
+macOS also asks once whether Arco may find devices on your **local network** — allow it, or Arco can't find the Roon
+Core or UPnP renderers. Answered *Don't Allow* earlier? Switch Arco on under *System Settings › Privacy & Security ›
+Local Network*.
+
 ## Use
 
-1. Pick a zone under *Play to*.
-2. Switch on **Send to Roon**. Arco becomes the Mac's sound output.
+1. Pick where to play in the menu: a Roon zone, a UPnP renderer, or a DAC on this Mac (under *Local*).
+2. Switch on **Enable**. Arco becomes the Mac's sound output.
 3. Press play in Music.
 
 Switch it off and the Mac gets its own output back. Switching zones while it plays moves the music to the new zone.

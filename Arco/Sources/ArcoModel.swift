@@ -40,7 +40,7 @@ final class ArcoModel: ObservableObject {
         tracker.onChange = { [weak self] zones in self?.zonesChanged(zones) }
         connection.setStatus("Starting")
         roonOn = UserDefaults.standard.object(forKey: Self.roonKey) as? Bool ?? connection.wasPaired
-        if roonOn { connection.start() }
+        if roonOn { connection.start(); watchSearch() }
         Updater.announceIfUpdated()
     }
 
@@ -83,7 +83,7 @@ final class ArcoModel: ObservableObject {
         roonOn = on
         UserDefaults.standard.set(on, forKey: Self.roonKey)
         Log.note("roon: \(on ? "on" : "off") (the switch in the menu)")
-        if on { connection.start() } else {
+        if on { connection.start(); watchSearch() } else {
             if bridge.isOn, !bridge.isUPnP, !bridge.isLocal { bridge.turnOff() }
             connection.stop()
             searchingSince = nil; searchTooLong = false
@@ -147,18 +147,13 @@ final class ArcoModel: ObservableObject {
 
     private func connectionChanged(_ state: RoonConnection.State) {
         connectionState = state
-        if case .searching = state, roonOn {
-            if searchingSince == nil {
-                searchingSince = Date(); searchNoted = false
-                Task { @MainActor [weak self] in
-                    try? await Task.sleep(for: .seconds(30))
-                    guard let self, let since = self.searchingSince, Date().timeIntervalSince(since) >= 29, !self.searchNoted else { return }
-                    self.searchNoted = true
-                    self.searchTooLong = true
-                    Log.note("roon: no Roon Core answered for 30 s — not on this network (another subnet, a VPN, a guest network), or Arco may not use the local network (System Settings › Privacy & Security › Local Network)")
-                }
-            }
-        } else {
+        switch state {
+        // Still no Core to talk to: looking, or trying one that doesn't answer (ronde 0 of the review, 14 Nov 2026: the Core
+        // remembered since 0.5.2b10 made the state go searching → connecting → searching, and every "connecting" started the
+        // 30 s again — the hint never came).
+        case .searching, .connecting:
+            if roonOn { watchSearch() }
+        case .waitingForAuthorization, .paired:
             if let since = searchingSince, searchNoted { Log.note("roon: found after \(Int(Date().timeIntervalSince(since))) s") }
             searchingSince = nil
             searchTooLong = false
@@ -171,6 +166,20 @@ final class ArcoModel: ObservableObject {
             tracker.stop()
             zones = []
             if bridge.isOn, !bridge.isUPnP, !bridge.isLocal { bridge.turnOff() }
+        }
+    }
+
+    /// The 30 s without a Core begin (once per search): also at the start and when Roon is switched on — Arco begins in
+    /// "searching", and a state that doesn't change never reached connectionChanged (ronde 0 of the review).
+    private func watchSearch() {
+        guard roonOn, searchingSince == nil else { return }
+        searchingSince = Date(); searchNoted = false
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(30))
+            guard let self, self.roonOn, let since = self.searchingSince, Date().timeIntervalSince(since) >= 29, !self.searchNoted else { return }
+            self.searchNoted = true
+            self.searchTooLong = true
+            Log.note("roon: no Roon Core answered for 30 s — not on this network (another subnet, a VPN, a guest network), or Arco may not use the local network (System Settings › Privacy & Security › Local Network)")
         }
     }
 

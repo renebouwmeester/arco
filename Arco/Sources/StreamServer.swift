@@ -21,19 +21,37 @@ final class StreamServer: @unchecked Sendable {
     /// Starts listening; returns once the port is known (or nil after two seconds).
     func start() async -> UInt16? {
         if port != 0 { return port }
+        // A port that is taken (a second user's Arco on this Mac, another app) doesn't fail when the listener is made — only
+        // once it starts (EADDRINUSE, measured in ronde 0 of the review, 14 Nov 2026): then any port the system gives.
+        if let fixed = NWEndpoint.Port(rawValue: Self.preferredPort), let p = await listen(on: fixed) { return p }
+        Log.note("stream: port \(Self.preferredPort) is taken — another one")
+        return await listen(on: .any)
+    }
+
+    private func listen(on endpoint: NWEndpoint.Port) async -> UInt16? {
         // No Nagle (11 Oct 2026, 192 kHz): small sends waited for Roon's acknowledgement of the one before.
         let params = NWParameters.tcp
         if let tcp = params.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options { tcp.noDelay = true }
-        let fixed = NWEndpoint.Port(rawValue: Self.preferredPort).flatMap { try? NWListener(using: params, on: $0) }
-        guard let l = fixed ?? (try? NWListener(using: params, on: .any)) else { return nil }
+        guard let l = try? NWListener(using: params, on: endpoint) else { return nil }
+        let failed = Failed()
+        l.stateUpdateHandler = { state in
+            if case .failed(let error) = state { failed.set(); Log.note("stream: listener failed (\(error))") }
+        }
         l.newConnectionHandler = { [weak self] connection in self?.accept(connection) }
         l.start(queue: .global(qos: .userInitiated))
-        listener = l
         for _ in 0..<40 {
-            if let p = l.port?.rawValue, p != 0 { port = p; return p }
+            if failed.isSet { l.cancel(); return nil }
+            if let p = l.port?.rawValue, p != 0 { listener = l; port = p; return p }
             try? await Task.sleep(for: .milliseconds(50))
         }
+        l.cancel()
         return nil
+    }
+
+    private final class Failed: @unchecked Sendable {
+        private let lock = NSLock(); private var value = false
+        func set() { lock.lock(); value = true; lock.unlock() }
+        var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
     }
 
     func setStore(_ s: SliceStore?) { lock.lock(); store = s; lock.unlock() }

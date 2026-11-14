@@ -130,23 +130,32 @@ final class FormatLog {
         let out = Pipe(), err = Pipe()
         p.standardOutput = out
         p.standardError = err
+        // At the end of the stream (the process stopped) a handler is called again and again with no data — a million times
+        // a second (measured 14 Nov 2026, ronde 0 of the review): it lets go of itself there, and stop() lets go of both.
         out.fileHandleForReading.readabilityHandler = { [weak self] h in
             let d = h.availableData
-            guard !d.isEmpty else { return }
+            guard !d.isEmpty else { h.readabilityHandler = nil; return }
             Task { @MainActor in self?.received(d) }
         }
         err.fileHandleForReading.readabilityHandler = { [weak self] h in
             let d = h.availableData
-            guard !d.isEmpty, let text = String(data: d, encoding: .utf8) else { return }
+            guard !d.isEmpty else { h.readabilityHandler = nil; return }
+            guard let text = String(data: d, encoding: .utf8) else { return }
             Task { @MainActor in
                 Log.note("format log: \(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(160))")
                 if text.lowercased().contains("admin") { self?.unavailable = true }
             }
         }
-        p.terminationHandler = { [weak self] _ in Task { @MainActor in self?.process = nil } }
+        // Only this process: an old one that ends after a new one started must not take the new one's place (it would run on
+        // unseen, and the next start would add a second).
+        let mine = ObjectIdentifier(p)
+        p.terminationHandler = { [weak self] _ in
+            Task { @MainActor in if let self, self.process.map(ObjectIdentifier.init) == mine { self.process = nil } }
+        }
         do {
             try p.run()
             process = p
+            pipes = [out, err]
             Log.note("format log: following the Music app's audio formats")
             readBackLabels()
         } catch {
@@ -200,9 +209,15 @@ final class FormatLog {
         }
     }
 
+    /// The stream's pipes, to let go of their handlers at stop().
+    private var pipes: [Pipe] = []
+
     func stop() {
+        for pipe in pipes { pipe.fileHandleForReading.readabilityHandler = nil }
+        pipes = []
         process?.terminate()
         process = nil
+        buffer = Data()
         entries = []; ahead = []
         seenAny = false
         next = nil; titles = [:]; lengths = [:]
