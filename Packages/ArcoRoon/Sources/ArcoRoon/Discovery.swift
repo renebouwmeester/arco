@@ -20,15 +20,23 @@ public enum Discovery {
     static let port: UInt16 = 9003
 
     /// Asks the network which Roon Cores there are, and collects the answers for `seconds`.
-    public static func findCores(seconds: TimeInterval = 2.5) async -> [DiscoveredCore] {
+    /// `alsoAsk`: addresses asked directly as well (the Core found last time, 0.5.2b10). `log`: one search written out — which
+    /// connections it went through, and every answer that came back, also the ones Arco does not use.
+    public static func findCores(seconds: TimeInterval = 2.5, alsoAsk: [String] = [],
+                                 log: (@Sendable (String) -> Void)? = nil) async -> [DiscoveredCore] {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
-                continuation.resume(returning: query(seconds: seconds))
+                continuation.resume(returning: query(seconds: seconds, alsoAsk: alsoAsk, log: log))
             }
         }
     }
 
-    static func query(seconds: TimeInterval) -> [DiscoveredCore] {
+    static func adres(_ a: in_addr) -> String {
+        var a = a; var t = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+        return inet_ntop(AF_INET, &a, &t, socklen_t(INET_ADDRSTRLEN)) != nil ? String(cString: t) : "?"
+    }
+
+    static func query(seconds: TimeInterval, alsoAsk: [String] = [], log: (@Sendable (String) -> Void)? = nil) -> [DiscoveredCore] {
         let fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
         guard fd >= 0 else { return [] }
         defer { close(fd) }
@@ -53,6 +61,15 @@ public enum Discovery {
         }
         if kaarten.isEmpty { send(packet, on: fd, to: "239.255.90.90") }
         send(packet, on: fd, to: "255.255.255.255")
+        // The Core found last time, asked directly (0.5.2b10, a tester whose Mac on Ethernet got no answer to the multicast
+        // and the broadcast, while the Roon app — which remembers its Core — connected at once).
+        for host in alsoAsk { send(packet, on: fd, to: host) }
+        var poort = sockaddr_in(); var plen = socklen_t(MemoryLayout<sockaddr_in>.size)
+        _ = withUnsafeMutablePointer(to: &poort) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &plen) } }
+        log?("search: through " + (kaarten.isEmpty ? "the default connection" : kaarten.map { "\($0.name) \(adres($0.address))\($0.broadcast.map { " (broadcast \($0))" } ?? "")" }
+            .joined(separator: ", ")) + ", 255.255.255.255" + (alsoAsk.isEmpty ? "" : ", and directly \(alsoAsk.joined(separator: ", "))")
+            + " — answers to port \(UInt16(bigEndian: poort.sin_port))")
+        var antwoorden = 0
 
         var found: [String: DiscoveredCore] = [:]
         var buffer = [UInt8](repeating: 0, count: 65_536)
@@ -63,7 +80,16 @@ public enum Discovery {
             let count = withUnsafeMutablePointer(to: &from) { pointer in
                 pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { recvfrom(fd, &buffer, buffer.count, 0, $0, &length) }
             }
-            guard count > 0, let props = parseReply(buffer[0..<count]), props["service_id"] == roonServiceID else { continue }
+            guard count > 0 else { continue }
+            let props = parseReply(buffer[0..<count])
+            antwoorden += 1
+            if antwoorden <= 12 {
+                let wat = props == nil ? "not a SOOD reply (\(count) bytes)"
+                    : props?["service_id"] == roonServiceID ? "a Roon Core: \((props?["name"] ?? nil) ?? "?")"
+                    : "another service (\(((props?["service_id"] ?? nil) ?? "?").prefix(8))…)"
+                log?("search: answer from \(adres(from.sin_addr)):\(UInt16(bigEndian: from.sin_port)) — \(wat)")
+            }
+            guard let props, props["service_id"] == roonServiceID else { continue }
             var address = from.sin_addr
             var text = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
             guard inet_ntop(AF_INET, &address, &text, socklen_t(INET_ADDRSTRLEN)) != nil else { continue }
@@ -73,6 +99,7 @@ public enum Discovery {
                                        version: props["display_version"].flatMap { $0 } ?? "",
                                        host: host, port: props["http_port"].flatMap { $0 }.flatMap(Int.init) ?? 9330)
         }
+        if antwoorden == 0 { log?("search: no answer at all in \(String(format: "%.1f", seconds)) s") }
         return found.values.sorted { $0.name < $1.name }
     }
 

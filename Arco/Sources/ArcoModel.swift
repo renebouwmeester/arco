@@ -36,6 +36,7 @@ final class ArcoModel: ObservableObject {
         bridge = Bridge(connection: connection)
         selectedZoneID = UserDefaults.standard.string(forKey: Self.zoneIDKey)
         connection.onStateChange = { [weak self] state in self?.connectionChanged(state) }
+        connection.onLog = { Log.note($0) }
         tracker.onChange = { [weak self] zones in self?.zonesChanged(zones) }
         connection.setStatus("Starting")
         roonOn = UserDefaults.standard.object(forKey: Self.roonKey) as? Bool ?? connection.wasPaired

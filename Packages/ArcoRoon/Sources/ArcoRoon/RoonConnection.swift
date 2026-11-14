@@ -41,6 +41,9 @@ public final class RoonConnection: NSObject {
 
     public private(set) var state: State = .searching { didSet { if state != oldValue { onStateChange?(state) } } }
     public var onStateChange: ((State) -> Void)?
+    /// Lines for Arco's log (0.5.2b10: the search, written out).
+    public var onLog: (@Sendable (String) -> Void)?
+    private var zoekRondes = 0
     /// The address of the Core this connection talks to (a stream URL must be reachable from there).
     public private(set) var coreHost: String?
 
@@ -125,12 +128,28 @@ public final class RoonConnection: NSObject {
         lineNumber += 1
         let number = lineNumber
         state = .searching
-        let cores = await Discovery.findCores()
+        // The search written out: the first round, then once a minute while it goes on (0.5.2b10).
+        zoekRondes += 1
+        let schrijf = zoekRondes == 1 || zoekRondes % 12 == 0
+        let laatste = savedState()["last_core"] as? [String: Any]
+        let laatsteHost = laatste?["host"] as? String
+        var cores = await Discovery.findCores(alsoAsk: laatsteHost.map { [$0] } ?? [],
+                                              log: schrijf ? onLog : nil)
         guard number == lineNumber else { return }
+        // Nothing answered, but a Core was found here before: try that one, as the Roon app does with the Core it knows.
+        if cores.isEmpty, let host = laatsteHost, let id = laatste?["id"] as? String {
+            cores = [DiscoveredCore(id: id, name: laatste?["name"] as? String ?? "Roon Core", version: "", host: host,
+                                    port: laatste?["port"] as? Int ?? 9330)]
+            if schrijf { onLog?("roon: no answer to the search — trying the Core found before, at \(host)") }
+        }
         let paired = savedState()["paired_core_id"] as? String
         guard let core = cores.first(where: { $0.id == paired }) ?? cores.first else {
             retry(after: 5)
             return
+        }
+        zoekRondes = 0
+        if laatsteHost != core.host || (laatste?["id"] as? String) != core.id {
+            save { $0["last_core"] = ["id": core.id, "name": core.name, "host": core.host, "port": core.port] }
         }
         state = .connecting(coreName: core.name)
         coreHost = core.host
