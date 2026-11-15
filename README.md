@@ -114,6 +114,10 @@ Extensions* as well.
 
 ## Problems and ideas
 
+- **Arco stays on "Looking for Roon…" or says "Can't find Roon"** (or finds no UPnP renderers) — almost always macOS'
+  permission for the local network. Open *System Settings › Privacy & Security › Local Network* and switch Arco on, then
+  switch Arco off and on in its menu. Is the Core on another network (a VPN, a second subnet)? Arco looks through every
+  network connection of the Mac, as the Roon app does, but it can only find a Core it can reach.
 - Arco keeps a log — **Show Log** in the menu opens it in Finder (`~/Library/Logs/Arco/arco.log`); it helps a lot with a bug report. It contains track titles and
   local network addresses — look it over before you share it.
 - [Report a problem or suggest something](https://github.com/renebouwmeester/arco/issues/new/choose), or ask in
