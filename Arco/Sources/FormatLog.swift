@@ -77,6 +77,9 @@ final class FormatLog {
     /// The log has given a line since it started: it works here, and silence means "the same format".
     private(set) var seenAny = false
     private static let lossless: Set<String> = ["qlac", "alac", "lpcm"]
+    /// A file that is what it is (15 Nov 2026, an mp3 at 48 kHz played at 44.1: its line was taken for an AAC quick start):
+    /// it never switches to lossless, so the rate the decoder sets up is the track's own.
+    private static let asItIs: Set<String> = [".mp3"]
 
     // MARK: The label (0.4.0)
     // The Music app gives each track it loads a label ("I/ICW") and names it with the track's title ("MP->AV Asset Log
@@ -104,6 +107,9 @@ final class FormatLog {
 
     /// The lossless label of the track with this title, if the Music app gave one.
     func label(for title: String) -> Label? { labels[title] }
+    /// The rate of a title's AAC track (its label's priming line): for a stream, which never gets a lossless one.
+    func aacRate(for title: String) -> Int? { aacRates[title] }
+    private var aacRates: [String: Int] = [:]
 
     /// Waits up to `seconds` for the lossless label of this track.
     func waitForLabel(_ title: String, seconds: TimeInterval) async -> Label? {
@@ -302,7 +308,7 @@ final class FormatLog {
                 format = String(message[f].dropFirst(8).dropLast())
             }
             let now = Date()
-            guard Self.lossless.contains(format) else {
+            guard Self.lossless.contains(format) || Self.asItIs.contains(format) else {
                 Log.note("format log: the Music app set up \(format) at \(rate) Hz — not lossless (a quick start), doesn't count")
                 continue
             }
@@ -334,7 +340,7 @@ final class FormatLog {
         if m.contains("Asset Log Mapping") {
             if let g = groups(#"\([\d+]+::\d+\) (.*) -> <AVPlayerItem: 0x[0-9a-f]+> (I/[A-Za-z0-9]+)"#), g.count == 2 {
                 labelTitles[g[1]] = g[0]
-                if labelTitles.count > 400 { labelTitles.removeAll(); labels.removeAll(); aacSeen.removeAll() }
+                if labelTitles.count > 400 { labelTitles.removeAll(); labels.removeAll(); aacSeen.removeAll(); aacRates.removeAll() }
             }
             return true
         }
@@ -342,6 +348,7 @@ final class FormatLog {
             guard let g = groups(#"\|(I/[A-Za-z0-9]+)\.\d+>: audio track (\d+) priming duration \{(-?\d+)/(\d+)="#), g.count == 4,
                   let title = labelTitles[g[0]], let track = Int(g[1]), let priming = Int(g[2]), let rate = Int(g[3]), rate >= 8_000 else { return true }
             if priming != 0 {
+                aacRates[title] = rate
                 if labels[title] == nil, aacSeen[g[0]] != track {
                     aacSeen[g[0]] = track
                     if !quiet { Log.note("label: \(title) — track \(track) is AAC at \(rate) Hz (doesn't count)") }

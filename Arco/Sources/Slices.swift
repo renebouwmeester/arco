@@ -610,7 +610,7 @@ final class SliceStore: @unchecked Sendable {
                     restartAtTrackStart = false
                     let at = fromStart ? trackStart : c.written
                     if fromStart { c.limit = at }
-                    let left = fromStart ? (track?.durationMs ?? 1000) : max(1000, Int((remainingInTrackLocked() ?? 0) * 1000))
+                    let left = fromStart ? (track?.durationMs ?? 1000) : (track.map { $0.durationMs <= 0 } ?? false) ? 0 : max(1000, Int((remainingInTrackLocked() ?? 0) * 1000))   // a stream stays open-ended (15 Nov 2026)
                     if let t = track { pendingRun = (Track(info: t.info, durationMs: left), (c.number, c.ms(at))) }
                     Log.note("runs: \(c.number) frozen at \(c.ms(at)) ms (\(c.rate != rate ? "rate \(Int(c.rate)) → \(Int(rate))" : "three hours")\(fromStart ? ", the track starts over" : ""))")
                     continue
@@ -685,11 +685,18 @@ final class SliceStore: @unchecked Sendable {
             s.limit = max(0, s.written - held)
             s.closed = true
             slices[s.number] = nil
-            Log.note("runs: \(s.number) dropped (a skip) — its readers close in \(Int(wait * 1000)) ms, after Roon's pause")
+            // Until Roon lets go of it (15 Nov 2026): a fixed 3 s closed the readers while Roon still read on — when the new run
+            // came later (a clock reading, an AAC quick start: 6.5 s) Roon called the old one a MediaError after all and showed
+            // an old item. Now its "cleared", or the new run playing, closes them (releaseDropped); `wait` is the most.
+            dropping[s.number] = s
+            Log.note("runs: \(s.number) dropped (a skip) — its readers close when Roon lets go of it, at most in \(Int(wait * 1000)) ms")
             DispatchQueue.global().asyncAfter(deadline: .now() + wait) { [weak self] in
                 guard let self else { return }
                 self.lock.lock(); defer { self.lock.unlock() }
-                self.remove(s)
+                if self.dropping.removeValue(forKey: s.number) != nil {
+                    Log.note("runs: \(s.number) closed — Roon didn't let go of it within \(Int(wait)) s")
+                    self.remove(s)
+                }
             }
             return
         }
@@ -699,6 +706,17 @@ final class SliceStore: @unchecked Sendable {
 
     /// The next skip drops its run a moment later (SkipPause, see drop).
     private var dropLater: TimeInterval = 0
+    /// Runs a skip dropped whose readers stay until Roon lets go of them (see drop).
+    private var dropping: [Int: Slice] = [:]
+    /// Roon let go of a dropped run (its "cleared"), or a newer run plays: its readers close now. Nil: all of them.
+    func releaseDropped(_ number: Int? = nil, why: String) {
+        lock.lock(); defer { lock.unlock() }
+        for (n, s) in dropping where number == nil || n == number {
+            dropping[n] = nil
+            remove(s)
+            Log.note("runs: \(n) closed — \(why)")
+        }
+    }
     func dropNextSkipLater(_ wait: TimeInterval) {
         lock.lock(); defer { lock.unlock() }
         dropLater = wait

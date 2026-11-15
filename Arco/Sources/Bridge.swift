@@ -450,7 +450,7 @@ final class Bridge: ObservableObject {
         if let t = source.track { meter.begin(t.title, kind: .start) }
         // The first run: the current track, from where the source is now.
         guard let track = source.track else { return }
-        let left = max(1000, track.durationMs - Int(source.position() * 1000))
+        let left = Self.left(of: track, at: source.position())
         store.startTrack(.init(info: makeInfo(track), durationMs: left), newRun: true)
         if !lastInfoHadCover { lateCover(track) }   // also the first track of a session (16:08:13, after a restart)
         followClock(track, kind: .start)
@@ -518,6 +518,7 @@ final class Bridge: ObservableObject {
                 Log.note("play run \(slice.number): \(answer) came after a newer run — left alone"); return
             }
             if answer == "Playing" || answer == "Unpaused" {
+                self.store?.releaseDropped(why: "run \(slice.number) plays")
                 self.roonSlice = slice.number
                 self.nieuweRunNaPauze = false
                 self.nowPlaying = Self.lines(slice.info)
@@ -534,6 +535,13 @@ final class Bridge: ObservableObject {
                 self.fail("\(s.name) didn't play the next track")
             }
         }
+    }
+
+    /// What a new run gets of a track, from where the source is. A stream has no length (15 Nov 2026, SomaFM's Groove Salad):
+    /// 0 is "unknown", and the store makes the run open-ended — `max(1000, 0 − position)` made it a run of one second, full at
+    /// once, nothing declared after it, and Arco gave up with "No sound reaches Arco" while the sound was there.
+    static func left(of t: SourceTrack, at seconds: Double) -> Int {
+        t.durationMs > 0 ? max(1000, t.durationMs - Int(seconds * 1000)) : 0
     }
 
     /// Where Roon is in its run now: its last Time event, plus the time since (while it plays).
@@ -663,15 +671,16 @@ final class Bridge: ObservableObject {
             // from where the source is. A second error within half a minute switches off.
             if Date().timeIntervalSince(lastRetry) > 30, let t = source.track, let store {
                 lastRetry = Date()
-                let left = max(1000, t.durationMs - Int(source.position() * 1000))
+                let left = Self.left(of: t, at: source.position())
                 Log.note("roon: \(reason) — once more, a new run")
                 store.startTrack(.init(info: makeInfo(t), durationMs: left), newRun: true)
                 return
             }
             fail("Roon: \(reason)")
-        case .cleared:
-            // A slice replaced by a new play (a skip, a cut at a change of rate): Roon confirms it took it out.
-            break
+        case .cleared(let track):
+            // A slice replaced by a new play (a skip, a cut at a change of rate): Roon confirms it took it out — a run a
+            // skip dropped closes now (SkipPause, see SliceStore.drop).
+            if let n = Int(track) { store?.releaseDropped(n, why: "Roon let go of it") }
         case .control(let control):
             if control.contains("next") { source.next() }
             else if control.contains("prev") {
@@ -796,7 +805,7 @@ final class Bridge: ObservableObject {
                     roonControl("pause")
                     // 3 s (8 nov 2026, de proef 44,1 → 88,2): met een klokwissel kreeg Roon de nieuwe run later dan 0,4 s, las nog
                     // bij op de gesloten oude en meldde alsnog MediaError (een flard oud artwork). Roon laat de oude zelf los bij de nieuwe.
-                    store.dropNextSkipLater(3)
+                    store.dropNextSkipLater(10)   // at most: Roon's "cleared" or the new run closes it sooner (15 Nov 2026)
                     Log.note("skip: \(peer) paused first, the old run closes after it (SkipPause)")
                 }
                 let coverMissing = !lastInfoHadCover
@@ -864,7 +873,7 @@ final class Bridge: ObservableObject {
                 // A UPnP renderer that let go of the stream while paused (standby, 22 Oct 2026): no Play — it has nothing to
                 // play — but a fresh slice from where the Music app is, as at a skip (it wakes the renderer too).
                 if phase == .paused, let out = session as? UPnPOutput, out.lostStream, let track, let store {
-                    let left = max(1000, track.durationMs - Int(s.position() * 1000))
+                    let left = Self.left(of: track, at: s.position())
                     Log.note("resume: \(out.name) let go of the stream while paused — a fresh slice from where the Music app is")
                     store.startTrack(.init(info: makeInfo(track), durationMs: left), newRun: true)
                     phase = .playing
@@ -873,7 +882,7 @@ final class Bridge: ObservableObject {
                 // never made, its AppleScript timed out): no use catching up; a new run from where Music is, as at a skip.
                 if phase == .paused, let status = store?.status, roonSlice == status.number,
                    status.writtenMs - roonPositionMs > 20_000, let track {
-                    let left = max(1000, track.durationMs - Int(s.position() * 1000))
+                    let left = Self.left(of: track, at: s.position())
                     Log.note("resume: \(peer) is \((status.writtenMs - roonPositionMs) / 1000) s behind — a new run from where the Music app is")
                     store?.startTrack(.init(info: makeInfo(track), durationMs: left), newRun: true)
                 }
@@ -947,6 +956,10 @@ final class Bridge: ObservableObject {
                 fromLog = (l.rate, "the Music app's label \(l.label)")
             } else if kind == .natural, let n = self.formats.named(track.title) {
                 fromLog = n.rate.map { ($0, "the Music app's log, the line after it was named") } ?? (now, FormatLog.sameHow)
+            } else if track.durationMs <= 0, let aac = self.formats.aacRate(for: track.title) {
+                // A stream (15 Nov 2026, Groove Salad on a "remembered" 48000 while its label said AAC at 44.1): it is AAC
+                // and stays AAC — no lossless line will come, so its AAC label is its real rate.
+                fromLog = (aac, "the Music app's label: a stream in AAC")
             } else {
                 fromLog = await self.formats.rate(kind, change: change, previous: previous, current: now)
             }

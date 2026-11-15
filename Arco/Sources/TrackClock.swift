@@ -35,12 +35,18 @@ final class TrackClock {
     static func albumID(_ t: SourceTrack) -> String { [t.artist, t.album].joined(separator: "\u{1F}") }
 
     /// What memory says about this track: its own rate, or else the highest of its album.
-    func remembered(_ t: SourceTrack) -> Int? { trackRates[t.id] ?? albumRates[Self.albumID(t)] }
+    /// Not for a stream (no length), and no album memory without an album (15 Nov 2026: a stream got a "remembered" 48000 —
+    /// every title without artist and album shared one album key).
+    func remembered(_ t: SourceTrack) -> Int? {
+        guard t.durationMs > 0 else { return nil }
+        return trackRates[t.id] ?? (t.album.isEmpty ? nil : albumRates[Self.albumID(t)])
+    }
 
     func remember(_ rate: Int, for t: SourceTrack) {
+        guard t.durationMs > 0 else { return }
         trackRates[t.id] = rate
         let album = Self.albumID(t)
-        albumRates[album] = max(albumRates[album] ?? 0, rate)
+        if !t.album.isEmpty { albumRates[album] = max(albumRates[album] ?? 0, rate) }
         // Bounded: a few thousand tracks is plenty to know the albums one plays.
         if trackRates.count > 4000 { trackRates = Dictionary(uniqueKeysWithValues: trackRates.prefix(3000).map { ($0.key, $0.value) }) }
         if albumRates.count > 2000 { albumRates = Dictionary(uniqueKeysWithValues: albumRates.prefix(1500).map { ($0.key, $0.value) }) }
@@ -59,8 +65,12 @@ final class TrackClock {
         defer { Log.note("clock: \(t.title) — readings \(readings.joined(separator: ", "))\(remembered(t).map { "; remembered \($0)" } ?? "")") }
         while Date().timeIntervalSince(started) < 3 {
             guard stillCurrent() else { return nil }
+            let asked = Date()
             let r = music.sampleRate()
             readings.append(String(format: "%@ at %.2f s", r.map { String(Int($0)) } ?? "none", Date().timeIntervalSince(started)))
+            // The Music app didn't answer in time (15 Nov 2026, 18:02: two AppleEvent timeouts, the run reached Roon 9 s after
+            // the skip): asking again only waits once more — what follows (memory, or the clock as it is) decides now.
+            if r == nil, Date().timeIntervalSince(asked) > 2.5 { readings.append("the Music app doesn't answer"); break }
             if let r, r > 0 {
                 last = Int(r)
                 if last > 48_000 || !hiRes { return (last, "the Music app") }
