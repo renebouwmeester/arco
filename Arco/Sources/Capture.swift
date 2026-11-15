@@ -18,6 +18,11 @@ final class Capture: @unchecked Sendable {
     var onAudio: ((Data, Int, Int?) -> Void)?
     /// The device's sample rate; the bridge sets it again when the device changes rate.
     var rate: Double = 0
+    /// The input is lost for good: the watchdog could not start it again for ten seconds (on the main queue).
+    var onLost: ((String) -> Void)?
+    /// Capture is meant to run (start … stop) — the watchdog keys on this, not on procID, which a failed restart leaves nil.
+    private var wanted = false
+    private var failedRestarts = 0
 
     private var device: AudioDeviceID = 0
     private var procID: AudioDeviceIOProcID?
@@ -35,19 +40,29 @@ final class Capture: @unchecked Sendable {
         buffers = 0; soundSeen = false
         rate = AudioDevices.sampleRate(of: device) ?? 44_100
         if let error = startProc() { return error }
+        wanted = true; failedRestarts = 0
+        // 1.0, 15 Nov 2026 (the code review): one failed restart (coreaudiod restarting, a stale device id, a rate change in
+        // progress) left procID nil, and `procID != nil` stopped the watchdog for good — silence in Roon, the menu at playing.
+        // Now it keeps trying while capture is wanted, finds the Arco device again by its UID, and after ten failed seconds
+        // tells the bridge, which says so.
         watchdog = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            guard let self, self.procID != nil else { return }
+            guard let self, self.wanted else { return }
             self.lock.lock(); let quiet = Date().timeIntervalSince(self.lastCallback); self.lock.unlock()
-            if quiet > 1.5 {
-                Log.note("capture: no input for \(String(format: "%.1f", quiet)) s — starting again")
-                self.stopProc()
-                _ = self.startProc()
-            }
+            guard quiet > 1.5 || self.procID == nil else { self.failedRestarts = 0; return }
+            Log.note("capture: no input for \(String(format: "%.1f", quiet)) s — starting again")
+            self.stopProc()
+            if let fresh = AudioDevices.arco { self.device = fresh }
+            if let error = self.startProc() {
+                self.failedRestarts += 1
+                Log.note("capture: could not start again (\(self.failedRestarts)): \(error)")
+                if self.failedRestarts == 10 { self.onLost?("Arco can't read its own input any more (\(error)) — turn Arco off and on") }
+            } else { self.failedRestarts = 0 }
         }
         return nil
     }
 
     func stop() {
+        wanted = false
         watchdog?.invalidate(); watchdog = nil
         stopProc()
     }

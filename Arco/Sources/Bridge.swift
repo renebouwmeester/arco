@@ -153,6 +153,7 @@ final class Bridge: ObservableObject {
         formats.deviceRate = { [weak self] in Int(self?.capture.rate ?? 0) }
         let holder = storeHolder, capture = capture
         capture.onAudio = { pcm, frames, firstSound in holder.write(pcm, frames, firstSound, rate: capture.rate) }
+        capture.onLost = { [weak self] why in Task { @MainActor in self?.fail(why) } }
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.turnOff() }
         }
@@ -335,6 +336,7 @@ final class Bridge: ObservableObject {
         geduwdNa = 0; ingevoegdTot = 0; roonDoneRun = nil
         nieuweRunNaPauze = false; skipPauseUntil = .distantPast
         marks = []
+        session?.onEvent = nil   // its late answers are no longer ours (1.0, the code review)
         session?.end()
         session = nil
         capture.stop()
@@ -427,9 +429,20 @@ final class Bridge: ObservableObject {
             if let oh = renderer.openHome { s = OpenHomeOutput(renderer: renderer, openHome: oh) } else { s = UPnPOutput(renderer: renderer) }
         case .local: return       // no session: the Music app plays to the DAC itself
         }
-        s.onEvent = { [weak self] event in self?.roonEvent(event) }
+        // Only events of the session that is ours now (1.0, 15 Nov 2026 — the code review: an ended session's late answers —
+        // a SessionEnded, a Time of run 7 — reached the next session and turned it off, or skewed its run count).
+        // This attempt, and nothing else: while Roon (or a renderer, up to 5 s) answers, the user can turn Arco off or pick
+        // another zone. Then a late success is ended at once, and a late failure turns nothing off (1.0, the code review).
+        let mine = attempt
+        s.onEvent = { [weak self] event in guard let self, self.attempt == mine else { return }; self.roonEvent(event) }
         // ?v=: Roon keeps a source's icon by its URL — bump it when the icon changes
-        guard await s.begin(displayName: "Arco", iconURL: "http://\(address):\(server.port)/icon.png?v=5") else {
+        let began = await s.begin(displayName: "Arco", iconURL: "http://\(address):\(server.port)/icon.png?v=5")
+        guard attempt == mine, phase == .starting else {
+            if began { s.end() }
+            Log.note("session: the answer came after Arco was turned off or moved — \(began ? "ended at once" : "dropped")")
+            return
+        }
+        guard began else {
             return fail(isUPnPTarget(target) ? "\(target.name) doesn't answer" : "Roon didn't start a session on this zone")
         }
         session = s
@@ -499,6 +512,11 @@ final class Bridge: ObservableObject {
                 Log.note("play run \(slice.number) again (\(attempt)): \(s.name) answered \(answer)")
             }
             guard self.session === s else { return }
+            // A newer run may have started while this one waited for its answer (1.0, the code review): an old answer must not
+            // set the run count back, nor fail a session that has moved on.
+            if slice.number < self.roonSlice || self.store?.isCurrent(slice) == false && answer != "Playing" && answer != "Unpaused" {
+                Log.note("play run \(slice.number): \(answer) came after a newer run — left alone"); return
+            }
             if answer == "Playing" || answer == "Unpaused" {
                 self.roonSlice = slice.number
                 self.nieuweRunNaPauze = false
@@ -992,6 +1010,9 @@ final class Bridge: ObservableObject {
             Log.note("clock: \(track.title) — the Music app's log now says \(rate) Hz, but the track plays: it stays, resampled (remembered)")
             return
         }
+        // setClock refuses a second change for one track within two seconds — ask that BEFORE the track goes back to its
+        // start (1.0, 15 Nov 2026 — the code review: the limit stayed at the track's start, Music played on, Roon got silence).
+        if clockJustChanged(for: track) { Log.note("clock: \(track.title) — \(rate) Hz in the log, but the clock changed for it just now: it stays, resampled (remembered)"); return }
         store?.restartTrackAtNewRate()
         Log.note("clock: \(track.title) — the Music app's log now says \(rate) Hz (it started otherwise): correcting, from the track's start")
         Task { @MainActor [weak self] in
@@ -1018,6 +1039,7 @@ final class Bridge: ObservableObject {
             Log.note("clock: \(track.title) — the label now says \(l.rate) Hz, but the track plays: it stays, resampled (remembered)")
             return
         }
+        if clockJustChanged(for: track) { Log.note("clock: \(track.title) — the label says \(l.rate) Hz, but the clock changed for it just now: it stays, resampled (remembered)"); return }
         store?.restartTrackAtNewRate()
         Log.note("clock: \(track.title) — the label now says \(l.rate) Hz: correcting, from the track's start")
         Task { @MainActor [weak self] in await self?.setClock(l.rate, for: track, how: "the Music app's label, late", fromStart: true, evenIfThere: true) }
@@ -1025,6 +1047,12 @@ final class Bridge: ObservableObject {
 
     /// Basso's way for a change of clock: pause the Music app, set the rate, back to the start of the track if it only
     /// just began, play. The pause doesn't reach Roon (a change of rate within 0.2 s of it: "Music changes the clock").
+    /// setClock's own rule — never two changes for one track within two seconds — asked ahead (see lateLossless, labelArrived).
+    private func clockJustChanged(for track: SourceTrack) -> Bool {
+        if let last = lastClockChange, last.id == track.id, Date().timeIntervalSince(last.at) < 2 { return true }
+        return false
+    }
+
     private func setClock(_ rate: Int, for track: SourceTrack, how: String, fromStart: Bool, evenIfThere: Bool = false) async {
         guard let arco = arcoDevice, let now = AudioDevices.sampleRate(of: arco) else { return }
         let target = AudioDevices.bestRate(Double(rate), of: arco)

@@ -13,6 +13,9 @@ final class MusicWatcher: PlayerSource {
     /// None: the rate follows each track (TrackClock) — the Music app itself never changes it.
     let preferredRate: Double? = nil
     private var observer: NSObjectProtocol?
+    /// When the current track began, minus its pauses (1.0, 15 Nov 2026 — the code review: repeat-one, or the same song twice in
+    /// a row, has the same identity, so the second play was dropped as "nothing changed" — per track, the renderer went silent).
+    private var startedAt: Date?, pausedSince: Date?, pausedTotal: TimeInterval = 0
 
     init() {
         observer = DistributedNotificationCenter.default().addObserver(
@@ -27,14 +30,18 @@ final class MusicWatcher: PlayerSource {
     }
 
     func refresh() {
-        guard Self.isRunning, let reply = AppleScript.run("""
+        // Not running = stopped. But a script that times out or fails is NOT "stopped" (1.0, 15 Nov 2026 — the code review): it
+        // paused Roon while the app played on, called mid-session (refreshLength, clockPauseWatch) — exactly when the app is
+        // slow to answer. Then we keep what we had and report nothing.
+        guard Self.isRunning else { update(.stopped, nil); return }
+        guard let reply = AppleScript.run("""
             tell application "Music"
                 set s to player state as string
                 if s is "stopped" then return s
                 set t to current track
                 return s & linefeed & (name of t) & linefeed & (artist of t) & linefeed & (album of t) & linefeed & ((duration of t) as string)
             end tell
-            """)?.stringValue else { update(.stopped, nil); return }
+            """)?.stringValue else { Log.note("\(name): no answer to the state question — keeping what we had"); return }
         let lines = reply.components(separatedBy: "\n")
         let state = SourceState(rawValue: lines[0]) ?? .stopped
         guard state != .stopped, lines.count >= 5 else { update(state, nil); return }
@@ -52,13 +59,27 @@ final class MusicWatcher: PlayerSource {
         }
         guard state != .stopped, let title = info["Name"] as? String else { update(state, state == .stopped ? nil : track); return }
         let artist = info["Artist"] as? String ?? "", album = info["Album"] as? String ?? ""
-        update(state, SourceTrack(id: SourceTrack.identity(title, artist, album), title: title, artist: artist, album: album,
-                                  durationMs: (info["Total Time"] as? NSNumber)?.intValue ?? 0))
+        let t = SourceTrack(id: SourceTrack.identity(title, artist, album), title: title, artist: artist, album: album,
+                            durationMs: (info["Total Time"] as? NSNumber)?.intValue ?? 0)
+        // The same track, playing, announced again when its last play was (nearly) through and the needle is at the start:
+        // a new play of it, not a repeat of the notification.
+        if state == .playing, self.state == .playing, t.id == track?.id, t.durationMs > 0, let start = startedAt,
+           Date().timeIntervalSince(start) - pausedTotal >= Double(t.durationMs) / 1000 - 3, position() < 10 {
+            Log.note("Music: \(t.title) begins again (repeat or the same song twice)")
+            startedAt = Date(); pausedTotal = 0; pausedSince = nil
+            track = t
+            onChange?(state, t, true)
+            return
+        }
+        update(state, t)
     }
 
     private func update(_ state: SourceState, _ track: SourceTrack?) {
         let changed = track?.id != self.track?.id
         guard changed || state != self.state else { return }
+        if changed { startedAt = track == nil ? nil : Date(); pausedTotal = 0; pausedSince = state == .paused ? Date() : nil }
+        else if state == .paused, self.state == .playing { pausedSince = Date() }
+        else if state == .playing, let p = pausedSince { pausedTotal += Date().timeIntervalSince(p); pausedSince = nil }
         self.state = state
         self.track = track
         onChange?(state, track, changed)

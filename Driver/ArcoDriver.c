@@ -323,6 +323,19 @@ static OSStatus DoIOOperation(AudioServerPlugInDriverRef driver, AudioObjectID o
     Float32 *buffer = main;
     if (op == kAudioServerPlugInIOOperationWriteMix && s == kObjStream) {
         Float64 t0 = c->mOutputTime.mSampleTime;
+        // A gap (1.0, 15 Nov 2026 — the code review): the output client stopped and started again while Arco's own capture kept
+        // the device running, so the ring was never cleared. Frames between the old end and t0 were never written, yet they
+        // lie in [writeEnd − ring, writeEnd) once writeEnd jumps — ReadInput gave back up to a buffer of music from before the
+        // pause, and that stale fragment went into the stream after a resume. Clear the gap first (at most one ring, only when
+        // there is a gap; a memset on our own static buffer, no allocation, no lock).
+        if (gWriteEnd > 0 && t0 > gWriteEnd) {
+            Float64 gap = t0 - gWriteEnd;
+            UInt64 len = gap >= (Float64)kRing ? kRing : (UInt64)gap;
+            UInt64 start = (UInt64)(t0 - (Float64)len) % kRing;
+            UInt64 a = len < kRing - start ? len : kRing - start;
+            memset(&gRing[start * 2], 0, a * 2 * sizeof(Float32));
+            if (a < len) memset(&gRing[0], 0, (len - a) * 2 * sizeof(Float32));
+        }
         UInt64 position = (UInt64)t0 % kRing;
         UInt32 first = n < kRing - position ? n : (UInt32)(kRing - position);
         memcpy(&gRing[position * 2], buffer, first * 2 * sizeof(Float32));

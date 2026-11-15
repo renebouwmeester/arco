@@ -47,6 +47,11 @@ final class SliceStore: @unchecked Sendable {
         var frames: Int
         /// Roon has the header (rate, length): from now on a change of rate means a new run.
         var headerSent = false
+        /// Per track, a track that came without a length (1.0, 15 Nov 2026 — the code review): it got a slice of ONE frame, the
+        /// renderer played that and stopped while the track went to the overflow. Now it is served like `zonderLengte`: the
+        /// largest length in the header, and the end of the connection is the end of the track. setRemaining gives it the
+        /// real length if that comes before the renderer asks.
+        var openEnded = false
         /// Per track: declared ahead as the next track (it waits for its own rate, see write).
         var declared = false
         /// Where the current rate began (a frame of this run): the run goes to Roon once the rate has held a while.
@@ -76,7 +81,7 @@ final class SliceStore: @unchecked Sendable {
         /// Music app played of it at the old rate must not reach Roon — the pause it needs can take two seconds (17:08:39).
         var limit: Int?
         init(number: Int, path: String, rate: Double, frames: Int, info: [String: Any], follows: (Int, Int)?, directory: URL, flac: Bool = false) {
-            self.number = number; self.path = path; self.rate = rate; self.frames = max(1, frames)
+            self.number = number; self.path = path; self.rate = rate; self.frames = SliceStore.capped(frames, rate)
             self.info = info; self.follows = follows
             file = directory.appendingPathComponent("run-\(number).pcm")
             FileManager.default.createFile(atPath: file.path, contents: nil)
@@ -162,6 +167,10 @@ final class SliceStore: @unchecked Sendable {
     static func capacity(_ rate: Double) -> Int {
         min(Int(runHours * 3600 * rate), (Int(UInt32.max) - 36) / bytesPerFrame)
     }
+    /// A slice's length, never more than a WAV can say (1.0, 15 Nov 2026 — the code review): per track there was no cap, and a
+    /// track longer than ~62 min at 192 kHz (~31 min at 384) made `wavHeader` trap on UInt32 — Arco crashed with the system
+    /// output still on it. Runs had the cap since 21:32:25; now every place that sets `frames` goes through here.
+    static func capped(_ frames: Int, _ rate: Double) -> Int { max(1, min(frames, capacity(rate))) }
 
     /// Whether the run's rate has held `seconds` (see Slice.settled).
     func isSettled(_ s: Slice, seconds: Double) -> Bool { lock.lock(); defer { lock.unlock() }; return s.settled(seconds) }
@@ -244,7 +253,7 @@ final class SliceStore: @unchecked Sendable {
     /// nobody fetched yet. Nil when there is nothing it could follow.
     func declare(_ t: Track, rate askedRate: Double, frames askedFrames: Int) -> Slice? {
         lock.lock(); defer { lock.unlock() }
-        let rate = effective(askedRate), frames = max(1, Int(Double(askedFrames) * rate / askedRate))
+        let rate = effective(askedRate), frames = Self.capped(Int(Double(askedFrames) * rate / askedRate), rate)
         guard perTrack, current != nil || !overflow.isEmpty else { return nil }
         if let q = queued {
             guard !q.slice.headerSent, q.slice.written == 0, current !== q.slice else { return nil }
@@ -266,7 +275,7 @@ final class SliceStore: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         let rate = effective(asked)
         guard !s.headerSent, s.written == 0, s.rate != rate else { return false }
-        s.frames = max(1, Int(Double(s.frames) / s.rate * rate)); s.rate = rate
+        s.frames = Self.capped(Int(Double(s.frames) / s.rate * rate), rate); s.rate = rate
         return true
     }
 
@@ -311,6 +320,10 @@ final class SliceStore: @unchecked Sendable {
         guard let c = current, let t = track else { return }
         let done = Int(Double(c.written - trackStart) / c.rate * 1000)
         track = Track(info: t.info, durationMs: done + max(0, ms))
+        // A slice that began without a length, not yet asked for: now it has one (see Slice.openEnded).
+        if perTrack, c.openEnded, !c.headerSent {
+            c.frames = Self.capped(c.written + Int(Double(max(0, ms)) / 1000 * c.rate), c.rate); c.openEnded = false
+        }
     }
 
     /// How much of the current track is left in the run, in seconds (a natural end is near when this is small).
@@ -352,7 +365,8 @@ final class SliceStore: @unchecked Sendable {
         // took the start of Cinque's slice, cut it at 0 ms, and the KEF lost its end). Basso's way: the rest of that slice
         // becomes silence, it closes, and the track begins in its own slice at its own rate.
         if perTrack, let q = queued, let c = current, c !== q.slice, let t = track, Self.title(t.info) == Self.title(q.track.info) {
-            let rest = max(0, c.frames - c.written)
+            let rest = c.openEnded ? 0 : max(0, c.frames - c.written)   // without a length: it simply ends here (see Slice.openEnded)
+            if c.openEnded { endEarly(c) }
             if rest > 0 { append(Data(count: rest * Self.bytesPerFrame), frames: rest, to: c) }
             c.closed = true
             current = nil
@@ -546,7 +560,7 @@ final class SliceStore: @unchecked Sendable {
                     if Double(discarded) / rate < 1.5 { count = 0; continue }
                     discarded = 0
                     if !c.headerSent {
-                        c.frames = max(1, Int(Double(c.frames) / c.rate * rate)); c.rate = rate; c.rateSince = 0
+                        c.frames = Self.capped(Int(Double(c.frames) / c.rate * rate), rate); c.rate = rate; c.rateSince = 0
                         Log.note("runs: \(c.number) — the clock didn't change, the slice takes \(Int(rate)) Hz")
                         continue
                     }
@@ -556,7 +570,7 @@ final class SliceStore: @unchecked Sendable {
                     c.closed = true
                     // WAV without a length too (0.5.2b6, a tester's Linn, 11 Nov 2026 at 22:00): its readers had the last 0.4 s
                     // held back and no end of the connection — the Linn stayed in Buffering at the end of the slice until Next.
-                    if c.isFlac || zonderLengte { for r in c.readers { pump(c, r) } }
+                    if c.isFlac || zonderLengte || c.openEnded { for r in c.readers { pump(c, r) } }
                     current = nil
                     if queued != nil { moveToQueued(); Log.note("runs: \(c.number) full — on in \(current?.number ?? 0)") }
                     else { Log.note("runs: \(c.number) full — nothing declared after it, the overflow") }
@@ -580,7 +594,7 @@ final class SliceStore: @unchecked Sendable {
                     c.rate = rate
                     c.written = converted.count / Self.bytesPerFrame
                     c.rateSince = c.written
-                    c.frames = perTrack ? max(1, Int(Double(c.frames) / old * rate)) : Self.capacity(rate)
+                    c.frames = perTrack ? Self.capped(Int(Double(c.frames) / old * rate), rate) : Self.capacity(rate)
                     Log.note("runs: \(c.number) — rate \(Int(old)) → \(Int(rate)) before \(peer) had it: \(c.ms(c.written)) ms converted, it goes on")
                     continue
                 }
@@ -588,7 +602,7 @@ final class SliceStore: @unchecked Sendable {
                     // A change of rate (or three hours at one rate): freeze the run where it is — Roon still plays its
                     // end — and go on in a new run at the new rate, with the track that plays now.
                     c.closed = true
-                    if c.isFlac || zonderLengte { for r in c.readers { pump(c, r) } }
+                    if c.isFlac || zonderLengte || c.openEnded { for r in c.readers { pump(c, r) } }
                     current = nil
                     if perTrack, let q = queued { remove(q.slice); queued = nil }
                     // Back to the start of the track (TrackClock): the next run takes over where the track began.
@@ -637,9 +651,11 @@ final class SliceStore: @unchecked Sendable {
         // As long as a WAV can be: its length is a 32-bit field. Three hours fit at 44.1 and 48 kHz; at 96 kHz they would
         // be 6.2 GB — the header overflowed and Arco crashed (21:32:25). So about two hours at 96, one at 192; a full run
         // simply goes on in the next one.
-        let frames = perTrack ? max(1, Int(Double(p.track.durationMs) / 1000 * rate)) : Self.capacity(rate)
+        let lengthUnknown = perTrack && p.track.durationMs <= 0
+        let frames = perTrack && !lengthUnknown ? Self.capped(Int(Double(p.track.durationMs) / 1000 * rate), rate) : Self.capacity(rate)
         let s = Slice(number: counter, path: "/stream/\(session)-\(counter).\(ext)", rate: rate,
                       frames: frames, info: p.track.info, follows: p.follows, directory: directory, flac: flac && perTrack)
+        s.openEnded = lengthUnknown
         slices[s.number] = s
         current = s
         track = p.track
@@ -721,7 +737,7 @@ final class SliceStore: @unchecked Sendable {
         // Asked from the end (or past it) of a finished slice: 416, the HTTP way to say "that was all" (9 Nov 2026, a tester's Linn:
         // a stream without a length is asked for more when the connection closes; a 206 for "14935921-14935920" made it ask again
         // every 70 ms).
-        if from >= total, s.closed || !zonderLengte {
+        if from >= total, s.closed || !(zonderLengte || s.openEnded) {
             let uit = "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */\(total)\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
             connection.send(content: Data(uit.utf8), completion: .contentProcessed { _ in connection.cancel() })
             if let cb = onAskedFromEnd { let n = s.number; DispatchQueue.main.async { cb(n) } }
@@ -730,7 +746,7 @@ final class SliceStore: @unchecked Sendable {
         var http = from > 0
             ? "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes \(from)-\(total - 1)/\(total)\r\nContent-Length: \(total - from)\r\n"
             : "HTTP/1.1 200 OK\r\nContent-Length: \(total)\r\n"
-        if zonderLengte, !s.closed {
+        if zonderLengte || s.openEnded, !s.closed {
             http = from > 0 ? "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes \(from)-*/*\r\n" : "HTTP/1.1 200 OK\r\n"
         }
         // The DLNA lines for UPnP renderers (as Basso's bridge sends them; Roon ignores them).
@@ -773,7 +789,7 @@ final class SliceStore: @unchecked Sendable {
         let available = min(max(0, s.written - held), s.limit ?? Int.max) * Self.bytesPerFrame
         // A closed slice without a length ends where it ends, short of its declared length or not: the end of the connection
         // is the end of the track (see zonderLengte).
-        if zonderLengte, s.closed, r.offset >= available { r.connection.cancel(); return }
+        if zonderLengte || s.openEnded, s.closed, r.offset >= available { r.connection.cancel(); return }
         guard r.offset < available, let reader = s.reader else { return }
         // Not a trickle (11 Oct 2026, 192 kHz: Roon fetched at 6.3 Mbit/s where 9.2 were needed — 0.69×, and it fell behind
         // by that much): at the edge of an open run every capture of 512 frames (2.7 ms at 192 kHz) was a send of 3 KB of its
@@ -959,7 +975,7 @@ final class SliceStore: @unchecked Sendable {
     static func wavHeader(rate: Double, frames: Int) -> Data {
         func le32(_ v: UInt32) -> Data { withUnsafeBytes(of: v.littleEndian) { Data($0) } }
         func le16(_ v: UInt16) -> Data { withUnsafeBytes(of: v.littleEndian) { Data($0) } }
-        let dataBytes = UInt32(frames * bytesPerFrame)
+        let dataBytes = UInt32(clamping: min(frames, capacity(rate)) * bytesPerFrame)   // never traps (see capped)
         var d = Data("RIFF".utf8); d.append(le32(36 + dataBytes)); d.append(Data("WAVE".utf8))
         d.append(Data("fmt ".utf8)); d.append(le32(16)); d.append(le16(1)); d.append(le16(2))
         d.append(le32(UInt32(rate))); d.append(le32(UInt32(rate) * UInt32(bytesPerFrame))); d.append(le16(UInt16(bytesPerFrame))); d.append(le16(24))

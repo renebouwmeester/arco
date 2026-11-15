@@ -17,9 +17,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
-	<key>LSMinimumSystemVersion</key>
-	<string>14.0</string>
+	<string>2</string>
 	<key>CFPlugInFactories</key>
 	<dict>
 		<key>AED578BA-82D6-43F2-936A-9CB05C7D3A1D</key>
@@ -32,5 +30,7 @@
 			<string>AED578BA-82D6-43F2-936A-9CB05C7D3A1D</string>
 		</array>
 	</dict>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
 </dict>
 </plist>

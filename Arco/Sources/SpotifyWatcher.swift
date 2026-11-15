@@ -27,14 +27,18 @@ final class SpotifyWatcher: PlayerSource {
     }
 
     func refresh() {
-        guard Self.isRunning, let reply = AppleScript.run("""
+        // Not running = stopped. But a script that times out or fails is NOT "stopped" (1.0, 15 Nov 2026 — the code review): it
+        // paused Roon while the app played on, called mid-session (refreshLength, clockPauseWatch) — exactly when the app is
+        // slow to answer. Then we keep what we had and report nothing.
+        guard Self.isRunning else { update(.stopped, nil); return }
+        guard let reply = AppleScript.run("""
             tell application "Spotify"
                 set s to player state as string
                 if s is "stopped" then return s
                 set t to current track
                 return s & linefeed & (name of t) & linefeed & (artist of t) & linefeed & (album of t) & linefeed & ((duration of t) as string)
             end tell
-            """)?.stringValue else { update(.stopped, nil); return }
+            """)?.stringValue else { Log.note("\(name): no answer to the state question — keeping what we had"); return }
         let lines = reply.components(separatedBy: "\n")
         let state = SourceState(rawValue: lines[0]) ?? .stopped
         guard state != .stopped, lines.count >= 5 else { update(state, nil); return }
