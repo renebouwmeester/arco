@@ -210,8 +210,12 @@ struct UPnPRenderer: Identifiable, Equatable, Sendable {
         request.setValue("text/xml; charset=\"utf-8\"", forHTTPHeaderField: "Content-Type")
         request.setValue("\"\(type)#\(action)\"", forHTTPHeaderField: "SOAPAction")
         request.httpBody = Data(body.utf8)
-        guard let (data, response) = try? await URLSession.shared.data(for: request) else {
-            Log.note("upnp: \(name) — \(action) got no answer"); return nil
+        let data: Data, response: URLResponse
+        do { (data, response) = try await URLSession.shared.data(for: request) } catch {
+            // A question broken off because Arco switched off is not a renderer that didn't answer (a tester's log, 14 Nov 2026)
+            let broken = Task.isCancelled || (error as? URLError)?.code == .cancelled || error is CancellationError
+            if !broken { Log.note("upnp: \(name) — \(action) got no answer") }
+            return nil
         }
         let text = String(decoding: data, as: UTF8.self)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {

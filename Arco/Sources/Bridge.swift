@@ -318,6 +318,8 @@ final class Bridge: ObservableObject {
     }
 
     func turnOff() {
+        // Its own line, as "on:" has one (a tester's log, 14 Nov 2026: switching off showed only as "output: back to").
+        if phase != .off { Log.note("off: \(target?.name ?? "no target yet")") }
         attempt += 1   // an attempt to turn on that is still under way stops at its next step
         formats.stop()
         lastChangeAt = nil
