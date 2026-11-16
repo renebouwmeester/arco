@@ -735,7 +735,19 @@ final class SliceStore: @unchecked Sendable {
     }
 
     private func append(_ d: Data, frames n: Int, to s: Slice) {
-        try? s.writer?.write(contentsOf: d)
+        // A failed write (a full disk; no file handle at all) isn't silent any more (AR1, 16 Nov 2026): `written` counted on and the
+        // readers waited for bytes that were never there. The slice ends at what it has — its readers get an end.
+        guard !s.closed else { return }
+        do {
+            guard let w = s.writer else { throw CocoaError(.fileWriteUnknown) }
+            try w.write(contentsOf: d)
+        } catch {
+            Log.note("runs: \(s.number) — writing failed (\(error.localizedDescription)); the slice ends at \(s.written) frames")
+            s.closed = true
+            s.frames = max(1, s.written)
+            for r in s.readers { pump(s, r) }
+            return
+        }
         s.written += n
         for r in s.readers { pump(s, r) }
     }
