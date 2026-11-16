@@ -617,13 +617,16 @@ final class SliceStore: @unchecked Sendable {
                 if perTrack, c.isFull, c.rate == rate {
                     // Full: on in the declared next slice, or the overflow until the next track is known.
                     c.closed = true
+                    // No next yet: the end held back BEFORE the readers are pumped (16 Nov 2026, the KEF on FLAC with Spotify — the
+                    // pump finished the FLAC first, the renderer had all of it and the late next came after it began: a gap).
+                    let geenNext = queued == nil
+                    if geenNext { holdBackTail(c) }
                     // WAV without a length too (0.5.2b6, a tester's Linn, 11 Nov 2026 at 22:00): its readers had the last 0.4 s
                     // held back and no end of the connection — the Linn stayed in Buffering at the end of the slice until Next.
                     if c.isFlac || zonderLengte || c.openEnded { for r in c.readers { pump(c, r) } }
                     current = nil
-                    if queued != nil { moveToQueued(); Log.note("runs: \(c.number) full — on in \(current?.number ?? 0)") }
+                    if !geenNext { moveToQueued(); Log.note("runs: \(c.number) full — on in \(current?.number ?? 0)") }
                     else {
-                        holdBackTail(c)
                         if pendingRun != nil { Log.note("runs: \(c.number) full — on in the next track's slice") }
                         else {
                             Log.note("runs: \(c.number) full — nothing declared after it, the overflow")
@@ -917,7 +920,11 @@ final class SliceStore: @unchecked Sendable {
     /// length in the header, a reader its end).
     private func encodeFlac(_ s: Slice) {
         guard let file = s.flacFile, !s.flacDone, s.headerSent, let rd = s.reader else { return }
-        let held = s.closed || s !== current ? 0 : max(0, Int(Self.holdBackSeconds * s.rate) - released)
+        // The held-back end of a closed slice without a next (holdTail) counts here too (16 Nov 2026, the KEF on FLAC with
+        // Spotify: the encoder finished the slice at once, the renderer had all of it before the late next — a gap at Polythene
+        // Pam → She Came In Through the Bathroom Window). Finished only once its end is released (releaseTail pumps again).
+        let tail = Int(Self.holdBackSeconds * s.rate)
+        let held = s.closed ? (s.holdTail ? tail : 0) : (s !== current ? 0 : max(0, tail - released))
         let target = min(max(0, s.written - held), s.limit ?? Int.max, s.frames)
         if s.flacRef == nil {
             var doel = AudioStreamBasicDescription(mSampleRate: s.rate, mFormatID: kAudioFormatFLAC, mFormatFlags: 3,
@@ -947,7 +954,7 @@ final class SliceStore: @unchecked Sendable {
             if st != noErr { Log.note("runs: \(s.number) — FLAC write \(st)"); break }
             s.flacFrames += k
         }
-        if s.closed || s.flacFrames >= s.frames {
+        if !s.holdTail, s.closed || s.flacFrames >= s.frames {
             ExtAudioFileDispose(ref); s.flacRef = nil; s.flacDone = true
             Log.note("runs: \(s.number) — FLAC done, \(s.flacSize / 1024) KB for \(s.flacFrames * Self.bytesPerFrame / 1024) KB of PCM")
         }
