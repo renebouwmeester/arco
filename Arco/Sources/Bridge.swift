@@ -1213,24 +1213,29 @@ final class Bridge: ObservableObject {
     /// often hasn't loaded the new track's artwork yet ("Can't get raw data of artwork 1 of current track" — streamed and
     /// autoplay tracks above all), and Roon got the title without a cover. Asked again after 1.5 s and 4 s; found, it goes
     /// into the track's mark (Roon hasn't reached it yet) or to Roon at once (Roon shows the track already).
+    /// Longer (22 Nov 2026, forum: "the grey placeholder disc for a long time" on streaming-only albums): the Music app shows the
+    /// cover but loads it into the track later than 4 s — and after the second try Arco stopped asking. Now every 2 s after
+    /// that, for half a minute, as long as the track plays.
     private func lateCover(_ track: SourceTrack) {
         Task { @MainActor [weak self] in
-            for wait in [1.5, 2.5] {
+            var after = 0.0
+            for wait in [1.5, 2.5] + Array(repeating: 2.0, count: 13) {
                 try? await Task.sleep(for: .seconds(wait))
+                after += wait
                 guard let self, self.isOn, self.source.track?.id == track.id else { return }
                 let info = self.makeInfo(track)
                 guard self.lastInfoHadCover else { continue }
                 if let i = self.marks.firstIndex(where: { Self.lines($0.info)?.title == track.title }) {
                     self.marks[i].info = info
-                    Log.note("cover: \(track.title) — found a moment later, in the track's mark")
+                    Log.note("cover: \(track.title) — found after \(Int(after)) s, in the track's mark")
                 } else if let run = self.store?.status?.number {
                     // The run this track is written in (a skip began a new one; Roon may still be in the previous).
                     Task { await self.session?.updateInfo(track: String(run), info: info) }
-                    Log.note("cover: \(track.title) — found a moment later, sent to \(peer)")
+                    Log.note("cover: \(track.title) — found after \(Int(after)) s, sent to \(peer)")
                 }
                 return
             }
-            if let self, self.source.track?.id == track.id { Log.note("cover: \(track.title) — the Music app has none") }
+            if let self, self.source.track?.id == track.id { Log.note("cover: \(track.title) — the Music app has none after \(Int(after)) s") }
         }
     }
 
