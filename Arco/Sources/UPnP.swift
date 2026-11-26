@@ -445,7 +445,7 @@ final class UPnPOutput: Output {
             + "xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\"><item id=\"arco\" parentID=\"0\" restricted=\"1\">"
             + "<dc:title>\(title)</dc:title><dc:creator>\(artist)</dc:creator><upnp:artist>\(artist)</upnp:artist>"
             + "<upnp:album>\(album)</upnp:album>\(art)<upnp:class>object.item.audioItem.musicTrack</upnp:class>"
-            + "<res protocolInfo=\"http-get:*:\(url.hasSuffix(".flac") ? "audio/flac" : "audio/wav"):DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000\">\(UPnPRenderer.escape(url))</res>"
+            + "<res protocolInfo=\"http-get:*:audio/wav:DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000\">\(UPnPRenderer.escape(url))</res>"
             + "</item></DIDL-Lite>"
     }
 }

@@ -48,12 +48,49 @@ protocol PlayerSource: AnyObject {
 enum AppleScript {
     /// Every script within a time limit: an app that doesn't answer its Apple Events (6 Oct 2026, 21:53: the Music app
     /// answered nobody, not even Terminal) must not hang Arco — the default limit is two minutes, on the main thread.
+    /// And not while macOS still has to ask (AR17, 19 Nov 2026): after an update (a new signature) the first Apple Event waited
+    /// in macOS's automation check before it was even sent — `with timeout` only counts once it is sent — and the main thread
+    /// hung: nothing was written, Roon played its buffer empty, the menu didn't open, Quit didn't work. So first a question
+    /// that never waits (ask: false); without permission yet the script is skipped — the setup list asks, off the main thread.
+    /// (26 Nov 2026: running the scripts on a queue of their own instead got one stuck for minutes and left Arco deaf to the
+    /// Music app — NSAppleScript belongs on the thread that calls it.)
     @discardableResult
     static func run(_ source: String, seconds: Int = 3) -> NSAppleEventDescriptor? {
+        if let app = targetApp(source), !mayAsk(app) { return nil }
         var error: NSDictionary?
         let script = "with timeout of \(seconds) seconds\n\(source)\nend timeout"
         let result = NSAppleScript(source: script)?.executeAndReturnError(&error)
         if let error { Log.note("applescript: \(error[NSAppleScript.errorMessage] ?? error)") }
         return error == nil ? result : nil
+    }
+
+    private static func targetApp(_ source: String) -> String? {
+        if source.contains("application \"Music\"") { return "com.apple.Music" }
+        if source.contains("application \"Spotify\"") { return "com.spotify.client" }
+        return nil
+    }
+
+    nonisolated(unsafe) private static var known: [String: (ok: Bool, at: Date)] = [:]
+    nonisolated(unsafe) private static var skippedNoted = Date.distantPast
+    private static let lock = NSLock()
+
+    /// Whether Arco may send this app Apple Events without macOS having to ask first. Never waits; remembered for 10 s.
+    private static func mayAsk(_ bundleID: String) -> Bool {
+        lock.lock()
+        if let k = known[bundleID], Date().timeIntervalSince(k.at) < 10 { lock.unlock(); return k.ok }
+        lock.unlock()
+        var target = AEAddressDesc()
+        let made = bundleID.withCString { AECreateDesc(typeApplicationBundleID, $0, strlen($0), &target) }
+        guard made == noErr else { return true }
+        defer { AEDisposeDesc(&target) }
+        let status = AEDeterminePermissionToAutomateTarget(&target, typeWildCard, typeWildCard, false)
+        // noErr: allowed; procNotFound: the app doesn't run (the script finds that out itself, quickly)
+        let ok = status == noErr || status == OSStatus(procNotFound)
+        lock.lock(); known[bundleID] = (ok, Date())
+        let say = !ok && Date().timeIntervalSince(skippedNoted) > 30
+        if say { skippedNoted = Date() }
+        lock.unlock()
+        if say { Log.note("applescript: no automation permission for \(bundleID) yet (\(status)) — skipped, the setup list asks") }
+        return ok
     }
 }

@@ -13,6 +13,8 @@ enum Resample {
               let converter = AVAudioConverter(from: inFormat, to: outFormat),
               let input = buffer(data, format: inFormat) else { return Data() }
         converter.sampleRateConverterQuality = AVAudioQuality.max.rawValue
+        // Mastering, not Apple's Normal (AR13, 26 Nov 2026): flat to 21 kHz instead of −8 dB at 20 kHz (measured 44.1 → 48)
+        converter.sampleRateConverterAlgorithm = AVSampleRateConverterAlgorithm_Mastering
         let capacity = AVAudioFrameCount(Double(frames) * to / from) + 1024
         guard let output = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: capacity) else { return Data() }
         var given = false
@@ -76,6 +78,7 @@ final class Downsampler {
               let o = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: to, channels: 2, interleaved: false),
               let c = AVAudioConverter(from: i, to: o) else { return nil }
         c.sampleRateConverterQuality = AVAudioQuality.max.rawValue
+        c.sampleRateConverterAlgorithm = AVSampleRateConverterAlgorithm_Mastering   // AR13
         self.from = from; self.to = to; inFormat = i; outFormat = o; converter = c
     }
 
