@@ -62,14 +62,17 @@ final class Bridge: ObservableObject {
     private var store: SliceStore?
     private var target: Target?
     /// The output plays to a UPnP renderer (experimental, see UPnP.swift).
-    var isUPnP: Bool { if case .upnp = target { return true }; return false }
+    /// The target of a turnOn that hasn't set `target` yet (AR3, 16 Nov 2026): the Roon connection dropping while switching on to
+    /// a UPnP renderer read `target` as nil, called that "not UPnP" and turned the bridge off.
+    private var pendingTarget: Target?
+    var isUPnP: Bool { if case .upnp = target ?? pendingTarget { return true }; return false }
     /// Who plays the runs, for the log: Roon, or a UPnP renderer.
     private var peer: String { isUPnP ? "the renderer" : "Roon" }
     /// "This Mac" (21 Oct 2026, René: "kunnen we Arco ook naar een local device laten afspelen? Voordeel zou dan de
     /// autoclocker moeten zijn"): the Music app plays straight to a DAC of this Mac, and Arco only sets the DAC's clock per
     /// track — from the label, at the boundary, never in the middle of a track. No capture, no Roon, no Arco driver.
     /// Experimental: `defaults write nl.renebouwmeester.arco ThisMac -bool true`.
-    var isLocal: Bool { if case .local = target { return true }; return false }
+    var isLocal: Bool { if case .local = target ?? pendingTarget { return true }; return false }
     static var localEnabled: Bool { UserDefaults.standard.object(forKey: "ThisMac") as? Bool ?? true }   // on since 0.5.0b1 (the beta)
     /// The bit depth of the track that plays, from the Music app's label (nil: the label didn't say).
     var bits: Int? { source === music ? music.track.flatMap { formats.label(for: $0.title)?.bits } : nil }
@@ -233,6 +236,8 @@ final class Bridge: ObservableObject {
         func current() -> Bool { attempt == mine && phase == .switchingOn }
         phase = .switchingOn
         zoneName = target.name
+        pendingTarget = target
+        defer { if attempt == mine { pendingTarget = nil } }
         if case .local(let out) = target { return await turnOnLocal(out, current: current) }
         if case .roon = target { guard case .paired = connection.state else { return fail("Roon is not connected") } }
         guard let arco = AudioDevices.arco else { return fail("Install the Arco audio driver first") }
@@ -278,7 +283,9 @@ final class Bridge: ObservableObject {
         if wasPlaying {
             source.pause()
             try? await Task.sleep(for: .milliseconds(300))
-            guard current() else { return }
+            // A second click within these 300 ms (AR4, 16 Nov 2026): this attempt paused the source, the next one sees it paused
+            // and wouldn't play it again — so give the music back before stepping aside.
+            guard current() else { source.play(); return }
         }
         if let current = AudioDevices.defaultOutput, current != arco, let uid = AudioDevices.uid(of: current) {
             UserDefaults.standard.set(uid, forKey: Self.previousOutputKey)
@@ -323,6 +330,7 @@ final class Bridge: ObservableObject {
         // Its own line, as "on:" has one (a tester's log, 14 Nov 2026: switching off showed only as "output: back to").
         if phase != .off { Log.note("off: \(target?.name ?? "no target yet")") }
         attempt += 1   // an attempt to turn on that is still under way stops at its next step
+        pendingTarget = nil
         formats.stop()
         lastChangeAt = nil
         if let rateWatch, let arcoDevice { AudioDevices.stopWatchingSampleRate(of: arcoDevice, rateWatch) }
@@ -449,12 +457,14 @@ final class Bridge: ObservableObject {
         session = s
         Log.note("session: began on the zone; slices at http://\(address):\(server.port)")
         if let t = source.track { meter.begin(t.title, kind: .start) }
-        // The first run: the current track, from where the source is now.
-        guard let track = source.track else { return }
-        let left = Self.left(of: track, at: source.position())
-        store.startTrack(.init(info: makeInfo(track), durationMs: left), newRun: true)
-        if !lastInfoHadCover { lateCover(track) }   // also the first track of a session (16:08:13, after a restart)
-        followClock(track, kind: .start)
+        // The first run: the current track, from where the source is now. No track known (AR2, 16 Nov 2026): the check below
+        // still runs — a return here left the menu at "Starting…" forever.
+        if let track = source.track {
+            let left = Self.left(of: track, at: source.position())
+            store.startTrack(.init(info: makeInfo(track), durationMs: left), newRun: true)
+            if !lastInfoHadCover { lateCover(track) }   // also the first track of a session (16:08:13, after a restart)
+            followClock(track, kind: .start)
+        }
         // No sound within five seconds: say so instead of waiting for nothing.
         try? await Task.sleep(for: .seconds(5))
         if session === s, phase == .starting, store.status == nil {
@@ -699,7 +709,8 @@ final class Bridge: ObservableObject {
                 store.startTrack(.init(info: makeInfo(t), durationMs: left), newRun: true)
                 return
             }
-            fail("Roon: \(reason)")
+            // The renderer's name, not "Roon", when the target is a UPnP or OpenHome renderer (AR5, 16 Nov 2026).
+            if let t = target, isUPnPTarget(t) { fail("\(t.name): \(reason)") } else { fail("Roon: \(reason)") }
         case .cleared(let track):
             // A slice replaced by a new play (a skip, a cut at a change of rate): Roon confirms it took it out — a run a
             // skip dropped closes now (SkipPause, see SliceStore.drop).
@@ -1209,7 +1220,15 @@ final class Bridge: ObservableObject {
             Task { await startSession() }
         case .playing, .paused, .starting:
             if let track = s.track { store?.startTrack(.init(info: makeInfo(track), durationMs: track.durationMs), newRun: true) }
-            if phase == .paused { roonControl("play"); phase = .playing }
+            // Not a resume of the old run (16 Nov 2026, the KEF: a Spotify play during a Music pause — the renderer played its
+            // buffer of the paused Music track first, as with a skip during a pause): the new run's own play replaces it.
+            // The run began with newRun above, and a new run is played into the zone by itself (sliceStarted) — Roon or renderer.
+            if phase == .paused {
+                nieuweRunNaPauze = true
+                Log.note("source: a new run follows the change of source — \(peer) not resumed on the old one")
+                phase = .playing
+                meter.hervat()
+            }
         default:
             break
         }
@@ -1219,24 +1238,29 @@ final class Bridge: ObservableObject {
     /// often hasn't loaded the new track's artwork yet ("Can't get raw data of artwork 1 of current track" — streamed and
     /// autoplay tracks above all), and Roon got the title without a cover. Asked again after 1.5 s and 4 s; found, it goes
     /// into the track's mark (Roon hasn't reached it yet) or to Roon at once (Roon shows the track already).
+    /// Longer (22 Nov 2026, forum: "the grey placeholder disc for a long time" on streaming-only albums): the Music app shows the
+    /// cover but loads it into the track later than 4 s — and after the second try Arco stopped asking. Now every 2 s after
+    /// that, for half a minute, as long as the track plays.
     private func lateCover(_ track: SourceTrack) {
         Task { @MainActor [weak self] in
-            for wait in [1.5, 2.5] {
+            var after = 0.0
+            for wait in [1.5, 2.5] + Array(repeating: 2.0, count: 13) {
                 try? await Task.sleep(for: .seconds(wait))
+                after += wait
                 guard let self, self.isOn, self.source.track?.id == track.id else { return }
                 let info = self.makeInfo(track)
                 guard self.lastInfoHadCover else { continue }
                 if let i = self.marks.firstIndex(where: { Self.lines($0.info)?.title == track.title }) {
                     self.marks[i].info = info
-                    Log.note("cover: \(track.title) — found a moment later, in the track's mark")
+                    Log.note("cover: \(track.title) — found after \(Int(after)) s, in the track's mark")
                 } else if let run = self.store?.status?.number {
                     // The run this track is written in (a skip began a new one; Roon may still be in the previous).
                     Task { await self.session?.updateInfo(track: String(run), info: info) }
-                    Log.note("cover: \(track.title) — found a moment later, sent to \(peer)")
+                    Log.note("cover: \(track.title) — found after \(Int(after)) s, sent to \(peer)")
                 }
                 return
             }
-            if let self, self.source.track?.id == track.id { Log.note("cover: \(track.title) — the Music app has none") }
+            if let self, self.source.track?.id == track.id { Log.note("cover: \(track.title) — the Music app has none after \(Int(after)) s") }
         }
     }
 
