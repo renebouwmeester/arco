@@ -72,18 +72,44 @@ enum AppleScript {
 
     nonisolated(unsafe) private static var known: [String: (ok: Bool, at: Date)] = [:]
     nonisolated(unsafe) private static var skippedNoted = Date.distantPast
+    nonisolated(unsafe) private static var busy: Set<String> = []
     private static let lock = NSLock()
 
-    /// Whether Arco may send this app Apple Events without macOS having to ask first. Never waits; remembered for 10 s.
+    private final class PermissionAnswer: @unchecked Sendable {
+        private let done = DispatchSemaphore(value: 0)
+        private var status: OSStatus = noErr
+        func set(_ s: OSStatus) { status = s; done.signal() }
+        func wait(_ seconds: Double) -> OSStatus? { done.wait(timeout: .now() + seconds) == .success ? status : nil }
+    }
+
+    /// Whether Arco may send this app Apple Events without macOS having to ask first. Waits half a second at most; remembered for 10 s.
     private static func mayAsk(_ bundleID: String) -> Bool {
         lock.lock()
         if let k = known[bundleID], Date().timeIntervalSince(k.at) < 10 { lock.unlock(); return k.ok }
         lock.unlock()
-        var target = AEAddressDesc()
-        let made = bundleID.withCString { AECreateDesc(typeApplicationBundleID, $0, strlen($0), &target) }
-        guard made == noErr else { return true }
-        defer { AEDisposeDesc(&target) }
-        let status = AEDeterminePermissionToAutomateTarget(&target, typeWildCard, typeWildCard, false)
+        // The check itself can wait too (26 Nov 2026, 17:10: on the main thread it never came back — the menu stayed open
+        // with a beach ball): so it runs on a thread of its own and gets half a second; no answer counts as "not now".
+        lock.lock()
+        if busy.contains(bundleID) { let last = known[bundleID]?.ok ?? false; lock.unlock(); return last }
+        busy.insert(bundleID)
+        lock.unlock()
+        let answer = PermissionAnswer()
+        DispatchQueue.global(qos: .userInitiated).async {
+            var target = AEAddressDesc()
+            let made = bundleID.withCString { AECreateDesc(typeApplicationBundleID, $0, strlen($0), &target) }
+            let status = made == noErr ? AEDeterminePermissionToAutomateTarget(&target, typeWildCard, typeWildCard, false) : noErr
+            if made == noErr { AEDisposeDesc(&target) }
+            answer.set(status)
+            lock.lock(); busy.remove(bundleID); lock.unlock()
+        }
+        guard let status = answer.wait(0.5) else {
+            lock.lock(); known[bundleID] = (false, Date())
+            let say = Date().timeIntervalSince(skippedNoted) > 30
+            if say { skippedNoted = Date() }
+            lock.unlock()
+            if say { Log.note("applescript: the automation check for \(bundleID) doesn't answer — skipped") }
+            return false
+        }
         // noErr: allowed; procNotFound: the app doesn't run (the script finds that out itself, quickly)
         let ok = status == noErr || status == OSStatus(procNotFound)
         lock.lock(); known[bundleID] = (ok, Date())
